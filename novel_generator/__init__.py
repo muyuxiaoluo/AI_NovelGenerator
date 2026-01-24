@@ -6,8 +6,12 @@ from .chapter import (
     summarize_recent_chapters,
     get_filtered_knowledge_context,
     build_chapter_prompt,
-    generate_chapter_draft
+    generate_chapter_draft,
+    analyze_chapter_logic,
+    rewrite_chapter_with_feedback,
+    refine_chapter_detail,
 )
 from .finalization import finalize_chapter, enrich_chapter_text
 from .knowledge import import_knowledge_file
 from .vectorstore_utils import clear_vector_store
+from .qa import answer_novel_question

@@ -3,10 +3,8 @@
 import logging
 from typing import Optional
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
-# from google import genai
-import google.generativeai as genai
-# from google.genai import types
-from google.generativeai import types
+from google import genai
+from google.genai import types
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.inference.models import SystemMessage, UserMessage
@@ -100,42 +98,35 @@ class GeminiAdapter(BaseLLMAdapter):
     """
     适配 Google Gemini (Google Generative AI) 接口
     """
-
-    # PenBo 修复新版本google-generativeai 不支持 Client 类问题；而是使用 GenerativeModel 类来访问API
-    def __init__(self, api_key: str, base_url: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
+    def __init__(self, api_key: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
         self.api_key = api_key
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
 
-        # 配置API密钥
-        genai.configure(api_key=self.api_key)
-        
-        # 创建生成模型实例
-        self._model = genai.GenerativeModel(model_name=self.model_name)
+        self._client = genai.Client(
+            api_key=self.api_key,
+            http_options={'timeout': self.timeout * 1000} if self.timeout else None # 新SDK部分版本支持http_options配置超时(毫秒)
+        )
 
     def invoke(self, prompt: str) -> str:
         try:
-            # 设置生成配置
-            generation_config = genai.types.GenerationConfig(
-                max_output_tokens=self.max_tokens,
-                temperature=self.temperature,
+            response = self._client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                )
             )
-            
-            # 生成内容
-            response = self._model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-            
             if response and response.text:
                 return response.text
             else:
                 logging.warning("No text response from Gemini API.")
                 return ""
         except Exception as e:
-            logging.error(f"Gemini API 调用失败: {e}")
+            logging.error(f"Gemini API (google-genai) 调用失败: {e}")
             return ""
 
 class AzureOpenAIAdapter(BaseLLMAdapter):
@@ -342,51 +333,15 @@ class SiliconFlowAdapter(BaseLLMAdapter):
                 ],
                 timeout=self.timeout  # 添加超时参数
             )
-            if not response:
-                logging.warning("No response from DeepSeekAdapter.")
+            if response and response.choices:
+                content = response.choices[0].message.content
+                # 确保返回字符串，不是 None
+                return content if content is not None else ""
+            else:
+                logging.warning("No response from AzureAIAdapter.")
                 return ""
-            return response.choices[0].message.content
         except Exception as e:
             logging.error(f"硅基流动API调用超时或失败: {e}")
-            return ""
-# grok實現
-class GrokAdapter(BaseLLMAdapter):
-    """
-    适配 xAI Grok API
-    """
-    def __init__(self, api_key: str, base_url: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
-        self.base_url = check_base_url(base_url)
-        self.api_key = api_key
-        self.model_name = model_name
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self.timeout = timeout
-
-        self._client = OpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
-            timeout=self.timeout
-        )
-
-    def invoke(self, prompt: str) -> str:
-        try:
-            response = self._client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": "You are Grok, created by xAI."},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                timeout=self.timeout
-            )
-            if response and response.choices:
-                return response.choices[0].message.content
-            else:
-                logging.warning("No response from GrokAdapter.")
-                return ""
-        except Exception as e:
-            logging.error(f"Grok API 调用失败: {e}")
             return ""
 
 def create_llm_adapter(
@@ -415,14 +370,13 @@ def create_llm_adapter(
     elif fmt == "ml studio":
         return MLStudioAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     elif fmt == "gemini":
-        return GeminiAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
+        # base_url 对 Gemini 暂无用处，可忽略
+        return GeminiAdapter(api_key, model_name, max_tokens, temperature, timeout)
     elif fmt == "阿里云百炼":
         return OpenAIAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     elif fmt == "火山引擎":
         return VolcanoEngineAIAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     elif fmt == "硅基流动":
         return SiliconFlowAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
-    elif fmt == "grok":
-        return GrokAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     else:
         raise ValueError(f"Unknown interface_format: {interface_format}")

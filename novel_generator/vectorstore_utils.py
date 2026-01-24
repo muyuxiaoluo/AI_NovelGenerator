@@ -152,8 +152,21 @@ def split_text_for_vectorstore(chapter_text: str, max_length: int = 500, similar
     if not chapter_text.strip():
         return []
     
-    # nltk.download('punkt', quiet=True)
-    # nltk.download('punkt_tab', quiet=True)
+    # --- 修改开始：自动检查并下载缺失的 NLTK 数据包 ---
+    try:
+        # 检查是否已存在 punkt_tab，不存在才下载
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        # quiet=True 防止在控制台打印大量下载进度条
+        nltk.download('punkt_tab', quiet=True)
+        
+    try:
+        # 保险起见，同时也检查基础的 punkt 包
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+    # --- 修改结束 ---
+
     sentences = nltk.sent_tokenize(chapter_text)
     if not sentences:
         return []

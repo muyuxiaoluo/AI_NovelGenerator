@@ -27,7 +27,10 @@ from ui.generation_handlers import (
     import_knowledge_handler,
     clear_vectorstore_handler,
     show_plot_arcs_ui,
-    generate_batch_ui
+    generate_batch_ui,
+    refine_directory_card_ui,
+    show_foreshadowing_records_ui,
+    show_novel_qa_ui as _show_novel_qa_ui
 )
 from ui.setting_tab import build_setting_tab, load_novel_architecture, save_novel_architecture
 from ui.directory_tab import build_directory_tab, load_chapter_blueprint, save_chapter_blueprint
@@ -43,6 +46,11 @@ class NovelGeneratorGUI:
     """
     def __init__(self, master):
         self.master = master
+        # -- 声明将在 build_* 函数中初始化的属性 --
+        self.log_text: ctk.CTkTextbox
+        self.char_inv_text: ctk.CTkTextbox
+        self.chapter_result: ctk.CTkTextbox
+        self.tabview: ctk.CTkTabview
         self.master.title("Novel Generator GUI")
         try:
             if os.path.exists("icon.ico"):
@@ -127,7 +135,8 @@ class NovelGeneratorGUI:
         self.final_chapter_llm_var = ctk.StringVar(value=choose_configs.get("final_chapter_llm", "DeepSeek"))
         self.consistency_review_llm_var = ctk.StringVar(value=choose_configs.get("consistency_review_llm", "DeepSeek"))
         self.prompt_draft_llm_var = ctk.StringVar(value=choose_configs.get("prompt_draft_llm", "DeepSeek"))
-
+        self.refine_logic_llm_var = ctk.StringVar(value=choose_configs.get("refine_logic_llm", "DeepSeek"))
+        self.logic_rewrite_llm_var = ctk.StringVar(value=choose_configs.get("logic_rewrite_llm", "DeepSeek"))
 
 
 
@@ -163,6 +172,10 @@ class NovelGeneratorGUI:
             self.time_constraint_var = ctk.StringVar(value="")
             self.user_guidance_default = ""
 
+            self.webdav_url_var = ctk.StringVar(value="")
+            self.webdav_username_var = ctk.StringVar(value="")
+            self.webdav_password_var = ctk.StringVar(value="")
+
         # --------------- 整体Tab布局 ---------------
         self.tabview = ctk.CTkTabview(self.master)
         self.tabview.pack(fill="both", expand=True)
@@ -178,6 +191,8 @@ class NovelGeneratorGUI:
         build_summary_tab(self)
         build_chapters_tab(self)
         build_other_settings_tab(self)
+
+        self.show_novel_qa_ui = lambda: _show_novel_qa_ui(self)
 
 
     # ----------------- 通用辅助函数 -----------------
@@ -361,23 +376,30 @@ class NovelGeneratorGUI:
             messagebox.showwarning("警告", "请先设置保存路径")
             return
         
-        # 初始化LLM适配器
-        llm_adapter = create_llm_adapter(
-            interface_format=self.interface_format_var.get(),
-            base_url=self.base_url_var.get(),
-            model_name=self.model_name_var.get(),
-            api_key=self.api_key_var.get(),
-            temperature=self.temperature_var.get(),
-            max_tokens=self.max_tokens_var.get(),
-            timeout=self.timeout_var.get()
-        )
+        # [修改] 初始化LLM适配器：使用 "refine_logic_llm_var"
+        try:
+            logic_llm_key = self.refine_logic_llm_var.get()
+            logic_config = self.loaded_config["llm_configs"][logic_llm_key]
+            
+            llm_adapter = create_llm_adapter(
+                interface_format=logic_config.get("interface_format", "OpenAI"),
+                base_url=logic_config.get("base_url", ""),
+                model_name=logic_config.get("model_name", ""),
+                api_key=logic_config.get("api_key", ""),
+                temperature=float(logic_config.get("temperature", 0.7)),
+                max_tokens=int(logic_config.get("max_tokens", 4096)),
+                timeout=int(logic_config.get("timeout", 600))
+            )
+        except Exception as e:
+            messagebox.showerror("配置错误", f"无法加载逻辑/选角模型配置: {str(e)}")
+            return
         
         # 传递LLM适配器实例到角色库
         if hasattr(self, '_role_lib'):
             if self._role_lib.window and self._role_lib.window.winfo_exists():
                 self._role_lib.window.destroy()
         
-        self._role_lib = RoleLibrary(self.master, save_path, llm_adapter)  # 新增参数
+        self._role_lib = RoleLibrary(self.master, save_path, llm_adapter)
 
     # ----------------- 将导入的各模块函数直接赋给类方法 -----------------
     generate_novel_architecture_ui = generate_novel_architecture_ui
@@ -386,9 +408,12 @@ class NovelGeneratorGUI:
     finalize_chapter_ui = finalize_chapter_ui
     do_consistency_check = do_consistency_check
     generate_batch_ui = generate_batch_ui
+    refine_directory_card_ui = refine_directory_card_ui
     import_knowledge_handler = import_knowledge_handler
     clear_vectorstore_handler = clear_vectorstore_handler
     show_plot_arcs_ui = show_plot_arcs_ui
+    show_foreshadowing_records_ui = show_foreshadowing_records_ui
+    show_novel_qa_ui = _show_novel_qa_ui
     load_config_btn = load_config_btn
     save_config_btn = save_config_btn
     load_novel_architecture = load_novel_architecture

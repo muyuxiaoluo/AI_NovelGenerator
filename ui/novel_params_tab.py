@@ -101,11 +101,13 @@ def build_novel_params_area(self, start_row=1):
 def build_optional_buttons_area(self, start_row=2):
     self.optional_btn_frame = ctk.CTkFrame(self.right_frame)
     self.optional_btn_frame.grid(row=start_row, column=0, sticky="ew", padx=5, pady=5)
+    # 配置列权重，确保按钮均匀分布
     self.optional_btn_frame.columnconfigure((0, 1, 2, 3, 4), weight=1)
 
+    # 第一行现有的按钮 (保持不变)
     self.btn_check_consistency = ctk.CTkButton(
         self.optional_btn_frame, text="一致性审校", command=self.do_consistency_check, 
-        font=("Microsoft YaHei", 12), width=100  # 固定宽度
+        font=("Microsoft YaHei", 12), width=100
     )
     self.btn_check_consistency.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
@@ -127,12 +129,33 @@ def build_optional_buttons_area(self, start_row=2):
     )
     self.plot_arcs_btn.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
-    # 新增角色库按钮
     self.role_library_btn = ctk.CTkButton(
         self.optional_btn_frame, text="角色库", command=self.show_role_library,
         font=("Microsoft YaHei", 12), width=100
     )
     self.role_library_btn.grid(row=0, column=4, padx=5, pady=5, sticky="ew")
+
+    # 伏笔库按钮 (改为 grid 布局，位置 1,0)
+    self.btn_foreshadow = ctk.CTkButton(
+        self.optional_btn_frame, 
+        text="🔍 查看伏笔库", 
+        command=self.show_foreshadowing_records_ui,
+        fg_color="#8E44AD", 
+        font=("Microsoft YaHei", 12)
+    )
+    # 将 columnspan 改为 2 或 3，留出空间给新按钮
+    self.btn_foreshadow.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+
+    # === [新增] 全书问答按钮 ===
+    self.btn_qa = ctk.CTkButton(
+        self.optional_btn_frame, 
+        text="📚 全书智能问答", 
+        command=self.show_novel_qa_ui, # 绑定刚才写的函数
+        fg_color="#16A085", # 青绿色，区分度高
+        font=("Microsoft YaHei", 12)
+    )
+    # 放在伏笔库旁边
+    self.btn_qa.grid(row=1, column=2, columnspan=3, padx=5, pady=5, sticky="ew")
 
 def create_label_with_help_for_novel_params(self, parent, label_text, tooltip_key, row, column, font=None, sticky="e", padx=5, pady=5):
     frame = ctk.CTkFrame(parent)

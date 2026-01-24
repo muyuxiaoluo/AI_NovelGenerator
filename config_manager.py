@@ -54,7 +54,16 @@ def create_config(config_file: str) -> dict:
             "max_tokens": 32768,
             "timeout": 600,
             "interface_format": "OpenAI"
-        }
+        },
+        "SiliconFlow/DeepSeek V3": {
+            "api_key": "sk-your-siliconflow-key",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "model_name": "deepseek-ai/DeepSeek-V3",
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "timeout": 600,
+            "interface_format": "OpenAI"
+        },
     },
     "embedding_configs": {
         "OpenAI": {
@@ -83,7 +92,8 @@ def create_config(config_file: str) -> dict:
         "chapter_outline_llm": "DeepSeek V3",
         "architecture_llm": "Gemini 2.5 Pro",
         "final_chapter_llm": "GPT 5",
-        "consistency_review_llm": "DeepSeek V3"
+        "consistency_review_llm": "DeepSeek V3",
+        "refine_logic_llm": "Gemini 2.5 Pro"
     },
     "proxy_setting": {
         "proxy_url": "127.0.0.1",

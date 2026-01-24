@@ -13,11 +13,14 @@ from prompt_definitions import (
     next_chapter_draft_prompt, 
     summarize_recent_chapters_prompt,
     knowledge_filter_prompt,
-    knowledge_search_prompt
+    knowledge_search_prompt,
+    LOGIC_CHECK_PROMPT,
+    REWRITE_WITH_FEEDBACK_PROMPT,
+    REFINE_DIRECTORY_PROMPT,
 )
 from chapter_directory_parser import get_chapter_info_from_blueprint
 from novel_generator.common import invoke_with_cleaning
-from utils import read_file, clear_file_content, save_string_to_txt
+from utils import extract_relevant_segments, read_file, clear_file_content, save_string_to_txt
 from novel_generator.vectorstore_utils import (
     get_relevant_context_from_vector_store,
     load_vector_store  # 添加导入
@@ -178,46 +181,34 @@ def parse_search_keywords(response_text: str) -> list:
     ][:5]  # 最多取5组
 
 def apply_content_rules(texts: list, novel_number: int) -> list:
-    """应用内容处理规则"""
+    """
+    [修改版] 移除硬编码的跳过逻辑。
+    保留原始内容，只做简单的去重或标记，把判断交给 LLM。
+    """
     processed = []
+    seen_hashes = set()
+    
     for text in texts:
-        if re.search(r'第[\d]+章', text) or re.search(r'chapter_[\d]+', text):
-            chap_nums = list(map(int, re.findall(r'\d+', text)))
-            recent_chap = max(chap_nums) if chap_nums else 0
-            time_distance = novel_number - recent_chap
+        # 1. 简单去重
+        clean_text = text.strip()
+        text_hash = hash(clean_text)
+        if text_hash in seen_hashes:
+            continue
+        seen_hashes.add(text_hash)
+        
+        # 2. 移除所有 [SKIP] / [MOD] 标记逻辑
+        # 只要检索到了，就说明向量认为它相关，直接透传给 LLM
+        processed.append(clean_text)
             
-            if time_distance <= 2:
-                processed.append(f"[SKIP] 跳过近章内容：{text[:120]}...")
-            elif 3 <= time_distance <= 5:
-                processed.append(f"[MOD40%] {text}（需修改≥40%）")
-            else:
-                processed.append(f"[OK] {text}（可引用核心）")
-        else:
-            processed.append(f"[PRIOR] {text}（优先使用）")
     return processed
 
 def apply_knowledge_rules(contexts: list, chapter_num: int) -> list:
-    """应用知识库使用规则"""
-    processed = []
-    for text in contexts:
-        # 检测历史章节内容
-        if "第" in text and "章" in text:
-            # 提取章节号判断时间远近
-            chap_nums = [int(s) for s in text.split() if s.isdigit()]
-            recent_chap = max(chap_nums) if chap_nums else 0
-            time_distance = chapter_num - recent_chap
-            
-            # 相似度处理规则
-            if time_distance <= 3:  # 近三章内容
-                processed.append(f"[历史章节限制] 跳过近期内容: {text[:50]}...")
-                continue
-                
-            # 允许引用但需要转换
-            processed.append(f"[历史参考] {text} (需进行30%以上改写)")
-        else:
-            # 第三方知识优先处理
-            processed.append(f"[外部知识] {text}")
-    return processed
+    """
+    [修改版] 废弃基于章节距离的过滤。
+    只要是检索出来的，说明向量相似度高，都应该保留给 Prompt 处理。
+    """
+    # 直接返回，不做任何删减
+    return contexts
 
 def get_filtered_knowledge_context(
     api_key: str,
@@ -232,49 +223,56 @@ def get_filtered_knowledge_context(
     timeout: int = 600
 ) -> str:
     """优化后的知识过滤处理"""
+    # 1. 如果没有检索到内容，直接返回
     if not retrieved_texts:
-        return "（无相关知识库内容）"
+        return "（无相关知识库内容，请基于前文设定创作）"
 
     try:
-        processed_texts = apply_knowledge_rules(retrieved_texts, chapter_info.get('chapter_number', 0))
+        # 2. 调用修改后的规则（现在只是简单的去重和标记）
+        # 注意：这里不再传入 chapter_num，因为新版函数不需要它
+        processed_texts = apply_content_rules(retrieved_texts, chapter_info.get('chapter_number', 0))
+
         llm_adapter = create_llm_adapter(
             interface_format=interface_format,
             base_url=base_url,
             model_name=model_name,
             api_key=api_key,
-            temperature=0.3,
+            temperature=0.1, # 再次降低温度，强制其“死板”
             max_tokens=max_tokens,
             timeout=timeout
         )
         
-        # 限制检索文本长度并格式化
+        # 3. 格式化检索文本：保留更多长度，不要随意截断
+        # 只有当总长度极大时才进行截断
         formatted_texts = []
-        max_text_length = 600
         for i, text in enumerate(processed_texts, 1):
-            if len(text) > max_text_length:
-                text = text[:max_text_length] + "..."
-            formatted_texts.append(f"[预处理结果{i}]\n{text}")
+            # 允许单条检索内容更长，以便保留环境描写的全貌
+            clean_text = text.strip()
+            formatted_texts.append(f"--- 片段 {i} ---\n{clean_text}")
 
-        # 使用格式化函数处理章节信息
+        all_retrieved_text = "\n".join(formatted_texts)
+
+        # 4. 构造 Prompt
         formatted_chapter_info = (
-            f"当前章节定位：{chapter_info.get('chapter_role', '')}\n"
-            f"核心目标：{chapter_info.get('chapter_purpose', '')}\n"
-            f"关键要素：{chapter_info.get('characters_involved', '')} | "
-            f"{chapter_info.get('key_items', '')} | "
-            f"{chapter_info.get('scene_location', '')}"
+            f"章节：第{chapter_info.get('chapter_number')}章 {chapter_info.get('chapter_title')}\n"
+            f"场景：{chapter_info.get('scene_location', '未知')}\n"
+            f"涉及人物：{chapter_info.get('characters_involved', '未知')}\n"
+            f"关键道具：{chapter_info.get('key_items', '无')}"
         )
 
         prompt = knowledge_filter_prompt.format(
             chapter_info=formatted_chapter_info,
-            retrieved_texts="\n\n".join(formatted_texts) if formatted_texts else "（无检索结果）"
+            retrieved_texts=all_retrieved_text
         )
         
         filtered_content = invoke_with_cleaning(llm_adapter, prompt)
-        return filtered_content if filtered_content else "（知识内容过滤失败）"
+        return filtered_content if filtered_content else "（知识内容过滤后为空）"
         
     except Exception as e:
         logging.error(f"Error in knowledge filtering: {str(e)}")
-        return "（内容过滤过程出错）"
+        # 降级策略：如果过滤失败，直接返回前2条原始检索结果，保证至少有东西可用
+        fallback = "\n".join(retrieved_texts[:2])
+        return f"[过滤失败，显示原始检索]:\n{fallback}"
 
 def build_chapter_prompt(
     api_key: str,
@@ -436,21 +434,28 @@ def build_chapter_prompt(
             actual_k = min(embedding_retrieval_k, max(1, collection_size))
             
             for group in keyword_groups:
-                context = get_relevant_context_from_vector_store(
+                # 1. 获取原始长文本 (可能是整章)
+                raw_context = get_relevant_context_from_vector_store(
                     embedding_adapter=embedding_adapter,
                     query=group,
                     filepath=filepath,
                     k=actual_k
                 )
-                if context:
+                
+                if raw_context:
+                    # 2. [关键修改] 执行智能截取
+                    # 将 query (如 "百草堂·内部陈设") 传进去，精准定位片段
+                    precise_context = extract_relevant_segments(raw_context, group, window_size=800)
+                    
+                    # 3. 添加标签 (保持原有逻辑)
                     if any(kw in group.lower() for kw in ["技法", "手法", "模板"]):
-                        all_contexts.append(f"[TECHNIQUE] {context}")
+                        all_contexts.append(f"[TECHNIQUE] {precise_context}")
                     elif any(kw in group.lower() for kw in ["设定", "技术", "世界观"]):
-                        all_contexts.append(f"[SETTING] {context}")
+                        all_contexts.append(f"[SETTING] {precise_context}")
                     else:
-                        all_contexts.append(f"[GENERAL] {context}")
+                        all_contexts.append(f"[GENERAL] {precise_context}")
 
-        # 应用内容规则
+        # 应用内容规则 (下文保持不变)
         processed_contexts = apply_content_rules(all_contexts, novel_number)
         
         # 执行知识过滤
@@ -538,7 +543,7 @@ def generate_chapter_draft(
     interface_format: str = "openai",
     max_tokens: int = 2048,
     timeout: int = 600,
-    custom_prompt_text: str = None
+    custom_prompt_text: str | None = None
 ) -> str:
     """
     生成章节草稿，支持自定义提示词
@@ -590,3 +595,129 @@ def generate_chapter_draft(
     save_string_to_txt(chapter_content, chapter_file)
     logging.info(f"[Draft] Chapter {novel_number} generated as a draft.")
     return chapter_content
+
+
+def analyze_chapter_logic(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    chapter_content: str,
+    filepath: str,
+    temperature: float = 0.1,  # 逻辑检查需要低温度
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> str:
+    """
+    调用大模型对生成的章节进行逻辑自检
+    """
+    try:
+        global_summary = read_file(os.path.join(filepath, "global_summary.txt"))
+        character_state = read_file(os.path.join(filepath, "character_state.txt"))
+
+        prompt = LOGIC_CHECK_PROMPT.format(
+            global_summary=global_summary,
+            character_state=character_state,
+            chapter_content=chapter_content
+        )
+
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        logging.info("正在进行逻辑自检...")
+        analysis_result = invoke_with_cleaning(llm_adapter, prompt)
+        return analysis_result
+
+    except Exception as e:
+        logging.error(f"逻辑自检失败: {str(e)}")
+        return f"逻辑自检发生错误: {str(e)}"
+
+def rewrite_chapter_with_feedback(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    original_content: str,
+    feedback: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    timeout: int = 600
+) -> str:
+    """
+    根据反馈意见重写章节
+    """
+    try:
+        prompt = REWRITE_WITH_FEEDBACK_PROMPT.format(
+            original_content=original_content,
+            feedback=feedback
+        )
+
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+
+        logging.info("正在根据反馈重写章节...")
+        new_content = invoke_with_cleaning(llm_adapter, prompt)
+        return new_content
+
+    except Exception as e:
+        logging.error(f"重写失败: {str(e)}")
+        return ""
+    
+
+def refine_chapter_detail(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    chapter_range: str,         # 修改：传入范围描述，如 "第5-7章"
+    novel_architecture: str,
+    global_summary: str,
+    current_outline: str,
+    user_instruction: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,     # 增加 token 限制，因为多章节内容较多
+    timeout: int = 600
+) -> str:
+    """
+    根据用户意见微调章节大纲 (支持多章节)
+    """
+    try:
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        prompt = REFINE_DIRECTORY_PROMPT.format(
+            chapter_range=chapter_range,
+            novel_architecture=novel_architecture if novel_architecture else "（暂无架构信息）",
+            global_summary=global_summary if global_summary else "（暂无剧情摘要）",
+            current_outline=current_outline,
+            user_instruction=user_instruction
+        )
+        
+        logging.info(f"正在微调大纲范围: {chapter_range} ...")
+        refined_content = invoke_with_cleaning(llm_adapter, prompt)
+        return refined_content
+    except Exception as e:
+        logging.error(f"微调章节大纲失败: {str(e)}")
+        return ""
+    

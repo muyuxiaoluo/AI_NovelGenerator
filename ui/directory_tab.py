@@ -12,14 +12,26 @@ def build_directory_tab(self):
     self.directory_tab.rowconfigure(1, weight=1)
     self.directory_tab.columnconfigure(0, weight=1)
 
-    load_btn = ctk.CTkButton(self.directory_tab, text="加载 Novel_directory.txt", command=self.load_chapter_blueprint, font=("Microsoft YaHei", 12))
-    load_btn.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+    # 创建顶部按钮容器框架，方便管理
+    top_frame = ctk.CTkFrame(self.directory_tab, fg_color="transparent")
+    top_frame.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+    
+    # 加载按钮
+    load_btn = ctk.CTkButton(top_frame, text="加载 Novel_directory.txt", command=self.load_chapter_blueprint, font=("Microsoft YaHei", 12))
+    load_btn.pack(side="left", padx=5)
 
-    self.directory_word_count_label = ctk.CTkLabel(self.directory_tab, text="字数：0", font=("Microsoft YaHei", 12))
-    self.directory_word_count_label.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+    # 字数统计
+    self.directory_word_count_label = ctk.CTkLabel(top_frame, text="字数：0", font=("Microsoft YaHei", 12))
+    self.directory_word_count_label.pack(side="left", padx=10)
 
-    save_btn = ctk.CTkButton(self.directory_tab, text="保存修改", command=self.save_chapter_blueprint, font=("Microsoft YaHei", 12))
-    save_btn.grid(row=0, column=2, padx=5, pady=5, sticky="e")
+    # 保存按钮
+    save_btn = ctk.CTkButton(top_frame, text="保存修改", command=self.save_chapter_blueprint, font=("Microsoft YaHei", 12))
+    save_btn.pack(side="right", padx=5)
+
+    # === 新增：微调目录按钮 ===
+    refine_btn = ctk.CTkButton(top_frame, text="✨ 微调目录 (AI)", command=self.refine_directory_card_ui, font=("Microsoft YaHei", 12), fg_color="#E67E22")
+    refine_btn.pack(side="right", padx=5)
+    # ========================
 
     self.directory_text = ctk.CTkTextbox(self.directory_tab, wrap="word", font=("Microsoft YaHei", 12))
     
@@ -31,7 +43,7 @@ def build_directory_tab(self):
     self.directory_text.bind("<KeyRelease>", update_word_count)
     self.directory_text.bind("<ButtonRelease>", update_word_count)
     TextWidgetContextMenu(self.directory_text)
-    self.directory_text.grid(row=1, column=0, sticky="nsew", padx=5, pady=5, columnspan=3)
+    self.directory_text.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
 def load_chapter_blueprint(self):
     filepath = self.filepath_var.get().strip()

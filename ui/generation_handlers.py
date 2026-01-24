@@ -1,9 +1,10 @@
 # ui/generation_handlers.py
 # -*- coding: utf-8 -*-
 import os
+import re
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import customtkinter as ctk
 import traceback
 import glob
@@ -16,7 +17,11 @@ from novel_generator import (
     import_knowledge_file,
     clear_vector_store,
     enrich_chapter_text,
-    build_chapter_prompt
+    build_chapter_prompt,
+    analyze_chapter_logic,
+    rewrite_chapter_with_feedback,
+    refine_chapter_detail,
+    answer_novel_question
 )
 from consistency_checker import check_consistency
 
@@ -131,73 +136,79 @@ def generate_chapter_draft_ui(self):
     def task():
         self.disable_button_safe(self.btn_generate_chapter)
         try:
+            # === 1. 准备大模型参数 ===
+            # 生成用的 LLM 配置
+            draft_config_key = self.prompt_draft_llm_var.get()
+            draft_config = self.loaded_config["llm_configs"][draft_config_key]
+            
+            draft_interface = draft_config["interface_format"]
+            draft_key = draft_config["api_key"]
+            draft_url = draft_config["base_url"]
+            draft_model = draft_config["model_name"]
+            draft_temp = draft_config["temperature"]
+            draft_tokens = draft_config["max_tokens"]
+            draft_timeout = draft_config["timeout"]
 
-            interface_format = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["interface_format"]
-            api_key = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["api_key"]
-            base_url = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["base_url"]
-            model_name = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["model_name"]
-            temperature = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["temperature"]
-            max_tokens = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["max_tokens"]
-            timeout_val = self.loaded_config["llm_configs"][self.prompt_draft_llm_var.get()]["timeout"]
+            # 自检用的 LLM 配置 (建议使用一致性审校的模型，通常逻辑更强)
+            review_config_key = self.refine_logic_llm_var.get() 
+            review_config = self.loaded_config["llm_configs"][review_config_key]
+            
+            review_interface = review_config["interface_format"]
+            review_key = review_config["api_key"]
+            review_url = review_config["base_url"]
+            review_model = review_config["model_name"]
+            
+            # Embedding 参数
+            emb_key = self.embedding_api_key_var.get().strip()
+            emb_url = self.embedding_url_var.get().strip()
+            emb_fmt = self.embedding_interface_format_var.get().strip()
+            emb_model = self.embedding_model_name_var.get().strip()
+            emb_k = self.safe_get_int(self.embedding_retrieval_k_var, 4)
 
-
+            # 章节参数
             chap_num = self.safe_get_int(self.chapter_num_var, 1)
-            word_number = self.safe_get_int(self.word_number_var, 3000)
-            user_guidance = self.user_guide_text.get("0.0", "end").strip()
-
+            word_num = self.safe_get_int(self.word_number_var, 3000)
+            user_guide = self.user_guide_text.get("0.0", "end").strip()
             char_inv = self.characters_involved_var.get().strip()
             key_items = self.key_items_var.get().strip()
             scene_loc = self.scene_location_var.get().strip()
             time_constr = self.time_constraint_var.get().strip()
 
-            embedding_api_key = self.embedding_api_key_var.get().strip()
-            embedding_url = self.embedding_url_var.get().strip()
-            embedding_interface_format = self.embedding_interface_format_var.get().strip()
-            embedding_model_name = self.embedding_model_name_var.get().strip()
-            embedding_k = self.safe_get_int(self.embedding_retrieval_k_var, 4)
+            self.safe_log(f"Step 3: 正在生成第{chap_num}章草稿提示词...")
 
-            self.safe_log(f"生成第{chap_num}章草稿：准备生成请求提示词...")
-
-            # 调用新添加的 build_chapter_prompt 函数构造初始提示词
+            # === 2. 构造提示词并让用户确认 ===
             prompt_text = build_chapter_prompt(
-                api_key=api_key,
-                base_url=base_url,
-                model_name=model_name,
-                filepath=filepath,
-                novel_number=chap_num,
-                word_number=word_number,
-                temperature=temperature,
-                user_guidance=user_guidance,
-                characters_involved=char_inv,
-                key_items=key_items,
-                scene_location=scene_loc,
-                time_constraint=time_constr,
-                embedding_api_key=embedding_api_key,
-                embedding_url=embedding_url,
-                embedding_interface_format=embedding_interface_format,
-                embedding_model_name=embedding_model_name,
-                embedding_retrieval_k=embedding_k,
-                interface_format=interface_format,
-                max_tokens=max_tokens,
-                timeout=timeout_val
+                api_key=draft_key, base_url=draft_url, model_name=draft_model,
+                filepath=filepath, novel_number=chap_num, word_number=word_num,
+                temperature=draft_temp, user_guidance=user_guide,
+                characters_involved=char_inv, key_items=key_items,
+                scene_location=scene_loc, time_constraint=time_constr,
+                embedding_api_key=emb_key, embedding_url=emb_url,
+                embedding_interface_format=emb_fmt, embedding_model_name=emb_model,
+                embedding_retrieval_k=emb_k, interface_format=draft_interface,
+                max_tokens=draft_tokens, timeout=draft_timeout
             )
 
-            # 弹出可编辑提示词对话框，等待用户确认或取消
-            result = {"prompt": None}
+            # 弹出确认框逻辑 (含字数统计)
+            result: dict[str, str | None] = {"prompt": None}
             event = threading.Event()
 
-            def create_dialog():
+            def create_prompt_dialog():
                 dialog = ctk.CTkToplevel(self.master)
-                dialog.title("当前章节请求提示词（可编辑）")
-                dialog.geometry("600x400")
-                text_box = ctk.CTkTextbox(dialog, wrap="word", font=("Microsoft YaHei", 12))
-                text_box.pack(fill="both", expand=True, padx=10, pady=10)
-
-                # 字数统计标签
-                wordcount_label = ctk.CTkLabel(dialog, text="字数：0", font=("Microsoft YaHei", 12))
-                wordcount_label.pack(side="left", padx=(10,0), pady=5)
+                dialog.title("确认提示词")
+                dialog.geometry("800x600")
                 
-                # 插入角色内容
+                # 顶部栏：标题 + 字数统计
+                header_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+                header_frame.pack(fill="x", padx=10, pady=(10,0))
+                ctk.CTkLabel(header_frame, text="生成提示词内容", font=("Microsoft YaHei", 12, "bold")).pack(side="left")
+                prompt_wc_label = ctk.CTkLabel(header_frame, text="字数：0", font=("Microsoft YaHei", 12))
+                prompt_wc_label.pack(side="right")
+
+                text_box = ctk.CTkTextbox(dialog, wrap="word", font=("Microsoft YaHei", 12))
+                text_box.pack(fill="both", expand=True, padx=10, pady=5)
+                
+                # 处理角色内容插入 (保持原有逻辑)
                 final_prompt = prompt_text
                 role_names = [name.strip() for name in self.char_inv_text.get("0.0", "end").strip().split(',') if name.strip()]
                 role_lib_path = os.path.join(filepath, "角色库")
@@ -207,31 +218,23 @@ def generate_chapter_draft_ui(self):
                     for root, dirs, files in os.walk(role_lib_path):
                         for file in files:
                             if file.endswith(".txt") and os.path.splitext(file)[0] in role_names:
-                                file_path = os.path.join(root, file)
                                 try:
-                                    with open(file_path, 'r', encoding='utf-8') as f:
-                                        role_contents.append(f.read().strip())  # 直接使用文件内容，不添加重复名字
-                                except Exception as e:
-                                    self.safe_log(f"读取角色文件 {file} 失败: {str(e)}")
+                                    with open(os.path.join(root, file), 'r', encoding='utf-8') as f:
+                                        role_contents.append(f.read().strip())
+                                except Exception: pass
                 
                 if role_contents:
                     role_content_str = "\n".join(role_contents)
-                    # 更精确的替换逻辑，处理不同情况下的占位符
                     placeholder_variations = [
                         "核心人物(可能未指定)：{characters_involved}",
                         "核心人物：{characters_involved}",
-                        "核心人物(可能未指定):{characters_involved}",
                         "核心人物:{characters_involved}"
                     ]
-                    
-                    for placeholder in placeholder_variations:
-                        if placeholder in final_prompt:
-                            final_prompt = final_prompt.replace(
-                                placeholder,
-                                f"核心人物：\n{role_content_str}"
-                            )
+                    for ph in placeholder_variations:
+                        if ph in final_prompt:
+                            final_prompt = final_prompt.replace(ph, f"核心人物：\n{role_content_str}")
                             break
-                    else:  # 如果没有找到任何已知占位符变体
+                    else:
                         lines = final_prompt.split('\n')
                         for i, line in enumerate(lines):
                             if "核心人物" in line and "：" in line:
@@ -240,74 +243,192 @@ def generate_chapter_draft_ui(self):
                         final_prompt = '\n'.join(lines)
 
                 text_box.insert("0.0", final_prompt)
-                # 更新字数函数
-                def update_word_count(event=None):
-                    text = text_box.get("0.0", "end-1c")
-                    text_length = len(text)
-                    wordcount_label.configure(text=f"字数：{text_length}")
+                
+                # 提示词字数更新逻辑
+                def update_prompt_wc(e=None):
+                    t = text_box.get("0.0", "end-1c")
+                    prompt_wc_label.configure(text=f"字数：{len(t)}")
+                text_box.bind("<KeyRelease>", update_prompt_wc)
+                update_prompt_wc() # 初始化
 
-                text_box.bind("<KeyRelease>", update_word_count)
-                text_box.bind("<ButtonRelease>", update_word_count)
-                update_word_count()  # 初始化统计
-
-                button_frame = ctk.CTkFrame(dialog)
-                button_frame.pack(pady=10)
+                btn_frame = ctk.CTkFrame(dialog)
+                btn_frame.pack(pady=10)
+                
                 def on_confirm():
                     result["prompt"] = text_box.get("1.0", "end").strip()
                     dialog.destroy()
                     event.set()
+                
                 def on_cancel():
-                    result["prompt"] = None
                     dialog.destroy()
                     event.set()
-                btn_confirm = ctk.CTkButton(button_frame, text="确认使用", font=("Microsoft YaHei", 12), command=on_confirm)
-                btn_confirm.pack(side="left", padx=10)
-                btn_cancel = ctk.CTkButton(button_frame, text="取消请求", font=("Microsoft YaHei", 12), command=on_cancel)
-                btn_cancel.pack(side="left", padx=10)
-                # 若用户直接关闭弹窗，则调用 on_cancel 处理
+
+                ctk.CTkButton(btn_frame, text="生成草稿", command=on_confirm).pack(side="left", padx=10)
+                ctk.CTkButton(btn_frame, text="取消", command=on_cancel, fg_color="gray").pack(side="left", padx=10)
                 dialog.protocol("WM_DELETE_WINDOW", on_cancel)
-                dialog.grab_set()
-            self.master.after(0, create_dialog)
-            event.wait()  # 等待用户操作完成
-            edited_prompt = result["prompt"]
-            if edited_prompt is None:
-                self.safe_log("❌ 用户取消了草稿生成请求。")
+
+            self.master.after(0, create_prompt_dialog)
+            event.wait()
+            
+            final_prompt = result["prompt"]
+            if not final_prompt:
+                self.safe_log("已取消生成。")
                 return
 
-            self.safe_log("开始生成章节草稿...")
-            from novel_generator.chapter import generate_chapter_draft
+            # === 3. 生成初稿 ===
+            self.safe_log("正在生成草稿正文，请稍候...")
             draft_text = generate_chapter_draft(
-                api_key=api_key,
-                base_url=base_url,
-                model_name=model_name,
-                filepath=filepath,
-                novel_number=chap_num,
-                word_number=word_number,
-                temperature=temperature,
-                user_guidance=user_guidance,
-                characters_involved=char_inv,
-                key_items=key_items,
-                scene_location=scene_loc,
-                time_constraint=time_constr,
-                embedding_api_key=embedding_api_key,
-                embedding_url=embedding_url,
-                embedding_interface_format=embedding_interface_format,
-                embedding_model_name=embedding_model_name,
-                embedding_retrieval_k=embedding_k,
-                interface_format=interface_format,
-                max_tokens=max_tokens,
-                timeout=timeout_val,
-                custom_prompt_text=edited_prompt  # 使用用户编辑后的提示词
+                api_key=draft_key, base_url=draft_url, model_name=draft_model,
+                filepath=filepath, novel_number=chap_num, word_number=word_num,
+                temperature=draft_temp, user_guidance=user_guide,
+                characters_involved=char_inv, key_items=key_items,
+                scene_location=scene_loc, time_constraint=time_constr,
+                embedding_api_key=emb_key, embedding_url=emb_url,
+                embedding_interface_format=emb_fmt, embedding_model_name=emb_model,
+                embedding_retrieval_k=emb_k, interface_format=draft_interface,
+                max_tokens=draft_tokens, timeout=draft_timeout,
+                custom_prompt_text=final_prompt
             )
-            if draft_text:
-                self.safe_log(f"✅ 第{chap_num}章草稿生成完成。请在左侧查看或编辑。")
-                self.master.after(0, lambda: self.show_chapter_in_textbox(draft_text))
-            else:
-                self.safe_log("⚠️ 本章草稿生成失败或无内容。")
-        except Exception:
-            self.handle_exception("生成章节草稿时出错")
+
+            if not draft_text:
+                self.safe_log("生成失败：返回内容为空。")
+                return
+
+            self.safe_log("✅ 初稿生成完毕，正在进行逻辑自检...")
+
+            # === 4. 自动逻辑自检 ===
+            logic_report = analyze_chapter_logic(
+                interface_format=review_interface,
+                api_key=review_key,
+                base_url=review_url,
+                model_name=review_model,
+                chapter_content=draft_text,
+                filepath=filepath,
+                timeout=draft_timeout
+            )
+
+            # === 5. 弹出“逻辑自检与修订”窗口 (含正文字数统计) ===
+            def show_logic_check_window():
+                check_win = ctk.CTkToplevel(self.master)
+                check_win.title(f"逻辑自检与修订 - 第{chap_num}章")
+                check_win.geometry("1200x800")
+                
+                # 布局配置
+                check_win.grid_columnconfigure(0, weight=3) # 正文区域更宽
+                check_win.grid_columnconfigure(1, weight=2)
+                check_win.grid_rowconfigure(0, weight=1)
+                
+                # --- 左侧：正文编辑区 ---
+                left_frame = ctk.CTkFrame(check_win)
+                left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+                
+                # 左侧顶部栏（标题 + 字数统计）
+                left_header = ctk.CTkFrame(left_frame, fg_color="transparent")
+                left_header.pack(fill="x", pady=5, padx=5)
+                ctk.CTkLabel(left_header, text="章节正文 (可手动修改)", font=("Microsoft YaHei", 14, "bold")).pack(side="left")
+                content_wc_label = ctk.CTkLabel(left_header, text="字数：0", font=("Microsoft YaHei", 12))
+                content_wc_label.pack(side="right")
+
+                content_box = ctk.CTkTextbox(left_frame, wrap="word", font=("Microsoft YaHei", 12))
+                content_box.pack(fill="both", expand=True, padx=5, pady=5)
+                content_box.insert("0.0", draft_text)
+                
+                # 正文字数更新逻辑
+                def update_content_wc(event=None):
+                    text = content_box.get("0.0", "end-1c")
+                    content_wc_label.configure(text=f"字数：{len(text)}")
+                
+                content_box.bind("<KeyRelease>", update_content_wc)
+                content_box.bind("<ButtonRelease>", update_content_wc)
+                update_content_wc() # 初始化统计
+
+                # --- 右侧：逻辑反馈区 ---
+                right_frame = ctk.CTkFrame(check_win)
+                right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+                ctk.CTkLabel(right_frame, text="逻辑漏洞报告 (可编辑反馈意见)", font=("Microsoft YaHei", 14, "bold")).pack(pady=5)
+                feedback_box = ctk.CTkTextbox(right_frame, wrap="word", font=("Microsoft YaHei", 12))
+                feedback_box.pack(fill="both", expand=True, padx=5, pady=5)
+                feedback_box.insert("0.0", logic_report)
+                
+                # --- 底部：按钮区 ---
+                btn_frame = ctk.CTkFrame(check_win)
+                btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+                
+                status_lbl = ctk.CTkLabel(btn_frame, text="等待操作...", text_color="gray")
+                status_lbl.pack(side="left", padx=10)
+
+                def on_rewrite():
+                    current_content = content_box.get("0.0", "end").strip()
+                    current_feedback = feedback_box.get("0.0", "end").strip()
+                    
+                    if not current_content: return
+                    
+                    status_lbl.configure(text="⏳ 正在根据反馈重写，请稍候...", text_color="blue")
+                    rewrite_btn.configure(state="disabled")
+                    confirm_btn.configure(state="disabled")
+                    
+                    def run_rewrite():
+                        try:
+                            new_text = rewrite_chapter_with_feedback(
+                                interface_format=draft_interface,
+                                api_key=draft_key,
+                                base_url=draft_url,
+                                model_name=draft_model,
+                                original_content=current_content,
+                                feedback=current_feedback,
+                                temperature=draft_temp,
+                                max_tokens=draft_tokens,
+                                timeout=draft_timeout
+                            )
+                            if new_text:
+                                self.master.after(0, lambda: content_box.delete("0.0", "end"))
+                                self.master.after(0, lambda: content_box.insert("0.0", new_text))
+                                self.master.after(0, lambda: feedback_box.delete("0.0", "end"))
+                                self.master.after(0, lambda: feedback_box.insert("0.0", "（已根据意见重写。请检查左侧内容，如有新问题可继续输入反馈。）"))
+                                # 重写完成后更新字数
+                                self.master.after(0, update_content_wc)
+                                self.master.after(0, lambda: status_lbl.configure(text="✅ 重写完成", text_color="green"))
+                            else:
+                                self.master.after(0, lambda: status_lbl.configure(text="❌ 重写失败", text_color="red"))
+                        except Exception as e:
+                            self.master.after(0, lambda: status_lbl.configure(text=f"❌ 出错: {str(e)}", text_color="red"))
+                        finally:
+                            self.master.after(0, lambda: rewrite_btn.configure(state="normal"))
+                            self.master.after(0, lambda: confirm_btn.configure(state="normal"))
+
+                    threading.Thread(target=run_rewrite, daemon=True).start()
+
+                def on_confirm():
+                    final_content = content_box.get("0.0", "end").strip()
+                    
+                    # 保存到文件
+                    chapters_dir = os.path.join(filepath, "chapters")
+                    os.makedirs(chapters_dir, exist_ok=True)
+                    chapter_file = os.path.join(chapters_dir, f"chapter_{chap_num}.txt")
+                    
+                    clear_file_content(chapter_file)
+                    save_string_to_txt(final_content, chapter_file)
+                    
+                    # 更新主界面显示
+                    self.show_chapter_in_textbox(final_content)
+                    self.safe_log(f"✅ 第{chap_num}章已确认并保存。")
+                    check_win.destroy()
+
+                rewrite_btn = ctk.CTkButton(btn_frame, text="提交反馈并重写 (Rewrite)", command=on_rewrite, fg_color="#E67E22", width=200)
+                rewrite_btn.pack(side="right", padx=10)
+                
+                confirm_btn = ctk.CTkButton(btn_frame, text="确认无误，使用此版本 (Confirm)", command=on_confirm, fg_color="#27AE60", width=200)
+                confirm_btn.pack(side="right", padx=10)
+                
+                check_win.protocol("WM_DELETE_WINDOW", on_confirm)
+
+            self.master.after(0, show_logic_check_window)
+
+        except Exception as e:
+            self.handle_exception("生成草稿流程出错")
         finally:
             self.enable_button_safe(self.btn_generate_chapter)
+
     threading.Thread(target=task, daemon=True).start()
 
 def finalize_chapter_ui(self):
@@ -529,7 +650,6 @@ def generate_batch_ui(self):
         
         dialog.protocol("WM_DELETE_WINDOW", on_cancel)
         dialog.transient(self.master)
-        dialog.grab_set()
         dialog.wait_window(dialog)
         return result
     
@@ -692,7 +812,7 @@ def generate_batch_ui(self):
 
 
 def import_knowledge_handler(self):
-    selected_file = tk.filedialog.askopenfilename(
+    selected_file = filedialog.askopenfilename(
         title="选择要导入的知识库文件",
         filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
     )
@@ -796,3 +916,389 @@ def show_plot_arcs_ui(self):
     text_area.pack(fill="both", expand=True, padx=10, pady=10)
     text_area.insert("0.0", arcs_text)
     text_area.configure(state="disabled")
+
+
+def refine_directory_card_ui(self):
+    """
+    微调章节目录的交互界面 (支持多章节范围修改)
+    """
+    filepath = self.filepath_var.get().strip()
+    if not filepath:
+        messagebox.showwarning("警告", "请先配置保存文件路径。")
+        return
+        
+    directory_file = os.path.join(filepath, "Novel_directory.txt")
+    if not os.path.exists(directory_file):
+        messagebox.showwarning("警告", "尚未生成目录文件 (Novel_directory.txt)。")
+        return
+
+    # 创建弹窗
+    dialog = ctk.CTkToplevel(self.master)
+    dialog.title("微调章节大纲 (支持多章节)")
+    dialog.geometry("1000x750")
+    
+    # 布局配置
+    dialog.grid_columnconfigure(0, weight=1)
+    dialog.grid_rowconfigure(1, weight=1)
+
+    # --- 顶部控制区 ---
+    top_frame = ctk.CTkFrame(dialog)
+    top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+    
+    ctk.CTkLabel(top_frame, text="起始章节:").pack(side="left", padx=(10, 5))
+    start_chap_entry = ctk.CTkEntry(top_frame, width=60)
+    start_chap_entry.pack(side="left", padx=5)
+    
+    ctk.CTkLabel(top_frame, text="结束章节:").pack(side="left", padx=(15, 5))
+    end_chap_entry = ctk.CTkEntry(top_frame, width=60)
+    end_chap_entry.pack(side="left", padx=5)
+    
+    # 辅助函数：构造正则
+    def get_range_pattern(start_num, end_num):
+        # 匹配从 "第{start}章" 开始，一直到 "第{end+1}章" 之前（或文件末尾）的所有内容
+        # 兼容 "章节编号：第X章" 和 "第X章" 两种格式
+        # 这里的逻辑是：找到 Start 的开头，然后向后找，直到找到 (End+1) 的开头
+        next_num = end_num + 1
+        pattern_str = (
+            f"(?:(?:章节编号：\\s*)?第\\s*{start_num}\\s*章)"  # 起始标记
+            f".*?"                                          # 中间内容 (非贪婪)
+            f"(?=(?:\\n\\s*(?:章节编号：\\s*)?第\\s*{next_num}\\s*章)|\\Z)" # 结束标记 (前瞻断言：是下一章开头 或 文件末尾)
+        )
+        return re.compile(pattern_str, re.DOTALL)
+
+    def load_chapter_info():
+        s_val = start_chap_entry.get().strip()
+        e_val = end_chap_entry.get().strip()
+        
+        if not s_val:
+            messagebox.showwarning("提示", "请输入起始章节号")
+            return
+        
+        try:
+            start_num = int(s_val)
+            # 如果没填结束章节，默认等于起始章节（单章模式）
+            end_num = int(e_val) if e_val else start_num
+            
+            if end_num < start_num:
+                messagebox.showerror("错误", "结束章节不能小于起始章节")
+                return
+
+            content = read_file(directory_file)
+            pattern = get_range_pattern(start_num, end_num)
+            
+            match = pattern.search(content)
+            if match:
+                extracted = match.group(0).strip()
+                outline_text.delete("0.0", "end")
+                outline_text.insert("0.0", extracted)
+                status_label.configure(text=f"已加载: 第 {start_num} - {end_num} 章", text_color="green")
+                return True
+            else:
+                status_label.configure(text=f"未找到章节范围 {start_num}-{end_num}，请检查目录文件。", text_color="red")
+                return False
+                
+        except ValueError:
+            messagebox.showerror("错误", "章节号必须是数字")
+        except Exception as e:
+            messagebox.showerror("错误", f"读取失败: {str(e)}")
+            return False
+
+    ctk.CTkButton(top_frame, text="读取范围大纲", command=load_chapter_info, width=120).pack(side="left", padx=15)
+    status_label = ctk.CTkLabel(top_frame, text="准备就绪", text_color="gray")
+    status_label.pack(side="left", padx=10)
+
+    # --- 中间内容区 ---
+    content_frame = ctk.CTkFrame(dialog)
+    content_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+    content_frame.grid_columnconfigure(0, weight=1)
+    content_frame.grid_rowconfigure(1, weight=1)
+    
+    ctk.CTkLabel(content_frame, text="大纲内容 (可编辑/AI生成)", font=("Microsoft YaHei", 12, "bold")).grid(row=0, column=0, sticky="w", pady=5)
+    outline_text = ctk.CTkTextbox(content_frame, wrap="word", font=("Microsoft YaHei", 12))
+    outline_text.grid(row=1, column=0, sticky="nsew", padx=5)
+    
+    # --- 底部指令区 ---
+    bottom_frame = ctk.CTkFrame(dialog)
+    bottom_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+    
+    ctk.CTkLabel(bottom_frame, text="修改意见 (例如：'让第5章的战斗更惨烈，并在第6章开头增加主角的感悟'):", font=("Microsoft YaHei", 12, "bold")).pack(anchor="w", padx=5)
+    instruction_text = ctk.CTkTextbox(bottom_frame, height=80, wrap="word")
+    instruction_text.pack(fill="x", padx=5, pady=5)
+    
+    btn_area = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+    btn_area.pack(fill="x", pady=5)
+
+    def on_ai_refine():
+        current_content = outline_text.get("0.0", "end").strip()
+        instruction = instruction_text.get("0.0", "end").strip()
+        s_val = start_chap_entry.get().strip()
+        e_val = end_chap_entry.get().strip() or s_val
+        
+        if not s_val:
+            messagebox.showwarning("提示", "请确保已填写章节号。")
+            return
+        if not current_content:
+            messagebox.showwarning("提示", "请先读取章节大纲内容。")
+            return
+        if not instruction:
+            messagebox.showwarning("提示", "请输入修改意见。")
+            return
+            
+        # 读取背景
+        arch_file = os.path.join(filepath, "Novel_architecture.txt")
+        summary_file = os.path.join(filepath, "global_summary.txt")
+        novel_arch_content = read_file(arch_file) if os.path.exists(arch_file) else ""
+        global_sum_content = read_file(summary_file) if os.path.exists(summary_file) else ""
+
+        # 获取配置
+        try:
+            llm_var = self.refine_logic_llm_var.get()
+            config = self.loaded_config["llm_configs"][llm_var]
+        except:
+            messagebox.showerror("错误", "无法获取配置。")
+            return
+
+        status_label.configure(text="AI 正在思考并微调剧情...", text_color="blue")
+        refine_btn.configure(state="disabled")
+        
+        def run_task():
+            try:
+                chapter_range_str = f"第{s_val}章" if s_val == e_val else f"第{s_val}章 到 第{e_val}章"
+                
+                new_outline = refine_chapter_detail(
+                    interface_format=config["interface_format"],
+                    api_key=config["api_key"],
+                    base_url=config["base_url"],
+                    model_name=config["model_name"],
+                    chapter_range=chapter_range_str, # 传入范围描述
+                    novel_architecture=novel_arch_content,
+                    global_summary=global_sum_content,
+                    current_outline=current_content,
+                    user_instruction=instruction,
+                    temperature=config["temperature"],
+                    max_tokens=config["max_tokens"],
+                    timeout=config["timeout"]
+                )
+                
+                if new_outline:
+                    self.master.after(0, lambda: outline_text.delete("0.0", "end"))
+                    self.master.after(0, lambda: outline_text.insert("0.0", new_outline))
+                    self.master.after(0, lambda: status_label.configure(text="✅ 微调完成，请检查", text_color="green"))
+                else:
+                    self.master.after(0, lambda: status_label.configure(text="❌ 微调失败 (返回空)", text_color="red"))
+            except Exception as e:
+                self.master.after(0, lambda: status_label.configure(text=f"❌ 出错: {str(e)}", text_color="red"))
+            finally:
+                self.master.after(0, lambda: refine_btn.configure(state="normal"))
+
+        threading.Thread(target=run_task, daemon=True).start()
+
+    def on_save_confirm():
+        try:
+            s_val = start_chap_entry.get().strip()
+            e_val = end_chap_entry.get().strip()
+            
+            if not s_val:
+                messagebox.showwarning("提示", "请输入起始章节号以定位替换位置。")
+                return
+                
+            start_num = int(s_val)
+            end_num = int(e_val) if e_val else start_num
+            
+            new_block = outline_text.get("0.0", "end").strip()
+            if not new_block:
+                messagebox.showwarning("提示", "内容为空，无法保存。")
+                return
+
+            # 读取全文
+            full_content = read_file(directory_file)
+            
+            # 使用相同的正则逻辑定位原文位置
+            pattern = get_range_pattern(start_num, end_num)
+            match = pattern.search(full_content)
+            
+            if match:
+                # 执行替换
+                # pattern.sub(new, old, count=1) 会替换掉匹配到的那一段
+                updated_full_content = pattern.sub(new_block, full_content, count=1)
+                
+                # 保存
+                save_string_to_txt(updated_full_content, directory_file)
+                
+                # 更新主界面
+                if hasattr(self, 'directory_text'):
+                    self.directory_text.delete("0.0", "end")
+                    self.directory_text.insert("0.0", updated_full_content)
+                
+                messagebox.showinfo("成功", f"第 {start_num}-{end_num} 章大纲已更新并保存。")
+                dialog.destroy()
+            else:
+                messagebox.showerror("定位失败", 
+                    f"在原文件中未找到第 {start_num}-{end_num} 章的连续块。\n"
+                    "可能原因：\n1. 章节号不连续\n2. 格式被破坏\n3. 文件已被外部修改\n"
+                    "建议：手动复制内容到主界面进行粘贴。"
+                )
+                
+        except ValueError:
+            messagebox.showerror("错误", "章节号格式错误。")
+        except Exception as e:
+            messagebox.showerror("保存异常", str(e))
+
+    refine_btn = ctk.CTkButton(btn_area, text="✨ AI 智能微调", command=on_ai_refine, fg_color="#E67E22", width=150)
+    refine_btn.pack(side="left", padx=20)
+    
+    save_btn = ctk.CTkButton(btn_area, text="💾 确认并保存", command=on_save_confirm, fg_color="#27AE60", width=150)
+    save_btn.pack(side="right", padx=20)
+    
+
+def show_foreshadowing_records_ui(self):
+    """
+    [新增] 显示伏笔记录库的弹窗
+    """
+    filepath = self.filepath_var.get().strip()
+    if not filepath:
+        messagebox.showwarning("警告", "请先在主Tab中设置保存文件路径")
+        return
+
+    record_file = os.path.join(filepath, "foreshadowing_records.txt")
+    if not os.path.exists(record_file):
+        messagebox.showinfo("提示", "当前还未生成任何伏笔记录。\n请先进行章节定稿(Finalize)以自动生成。")
+        return
+
+    content = read_file(record_file).strip()
+    if not content:
+        content = "伏笔记录为空。"
+
+    top = ctk.CTkToplevel(self.master)
+    top.title("全书伏笔线索库 (Foreshadowing Records)")
+    top.geometry("700x600")
+    
+    # 顶部说明
+    ctk.CTkLabel(top, text="这里记录了每一章定稿时AI提取的伏笔线索", text_color="gray").pack(pady=5)
+
+    # 文本区域
+    text_area = ctk.CTkTextbox(top, wrap="word", font=("Microsoft YaHei", 12))
+    text_area.pack(fill="both", expand=True, padx=10, pady=5)
+    text_area.insert("0.0", content)
+    
+    # 允许用户手动编辑和保存整理
+    def on_save_edit():
+        new_text = text_area.get("0.0", "end").strip()
+        save_string_to_txt(new_text, record_file)
+        messagebox.showinfo("成功", "伏笔记录已保存更新。")
+
+    btn_frame = ctk.CTkFrame(top)
+    btn_frame.pack(fill="x", padx=10, pady=10)
+    
+    ctk.CTkButton(btn_frame, text="保存修改", command=on_save_edit, fg_color="green").pack(side="right")
+
+
+def show_novel_qa_ui(self):
+    """
+    [新增] 全书问答 UI (类似聊天窗口)
+    """
+    filepath = self.filepath_var.get().strip()
+    if not filepath:
+        messagebox.showwarning("警告", "请先在主Tab中设置保存文件路径")
+        return
+        
+    # 创建弹窗
+    top = ctk.CTkToplevel(self.master)
+    top.title("全书知识库问答 (Novel Q&A)")
+    top.geometry("600x700")
+    
+    # 1. 聊天记录显示区
+    history_frame = ctk.CTkFrame(top)
+    history_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    chat_box = ctk.CTkTextbox(history_frame, font=("Microsoft YaHei", 12), state="disabled")
+    chat_box.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    # 2. 输入区
+    input_frame = ctk.CTkFrame(top)
+    input_frame.pack(fill="x", padx=10, pady=(0, 10))
+    
+    input_entry = ctk.CTkEntry(input_frame, placeholder_text="输入关于小说的问题，例如：叶落现在的等级是多少？", font=("Microsoft YaHei", 12))
+    input_entry.pack(side="left", fill="x", expand=True, padx=(5, 5), pady=5)
+    
+    # 3. 发送逻辑
+    def send_question(event=None):
+        question = input_entry.get().strip()
+        if not question: return
+        
+        # 显示用户问题
+        chat_box.configure(state="normal")
+        chat_box.insert("end", f"You: {question}\n\n", "user")
+        chat_box.insert("end", "AI: 正在翻阅全书...\n", "system")
+        chat_box.see("end")
+        chat_box.configure(state="disabled")
+        input_entry.delete(0, "end")
+        
+        def run_qa():
+            try:
+                # === 获取配置 ===
+                # 使用【逻辑/微调模型】来回答问题，因为它通常更便宜且逻辑够用
+                # 如果没配置，回退到 draft 模型
+                try:
+                    llm_key = self.refine_logic_llm_var.get()
+                    llm_conf = self.loaded_config["llm_configs"][llm_key]
+                except:
+                    llm_key = self.prompt_draft_llm_var.get()
+                    llm_conf = self.loaded_config["llm_configs"][llm_key]
+                
+                # === 2. 获取 Embedding 配置 (用于检索) ===
+                # 【关键修改】：直接读取主界面当前绑定的变量，而不是读配置文件里的第一个
+                # 这样可以确保和你“定稿”时用的是同一个配置，且 API Key 不会为空（只要你界面上填了）
+                emb_api_key = self.embedding_api_key_var.get().strip()
+                emb_base_url = self.embedding_url_var.get().strip()
+                emb_model_name = self.embedding_model_name_var.get().strip()
+                emb_interface_format = self.embedding_interface_format_var.get().strip()
+
+                # 简单校验
+                if not emb_api_key and "ollama" not in emb_interface_format.lower():
+                    update_chat("错误：Embedding API Key 为空，请在配置页检查。", is_error=True)
+                    return
+
+                # === 3. 调用后端 ===
+                answer = answer_novel_question(
+                    filepath=filepath,
+                    question=question,
+                    # LLM 参数
+                    llm_api_key=llm_conf["api_key"],
+                    llm_base_url=llm_conf["base_url"],
+                    llm_model_name=llm_conf["model_name"],
+                    interface_format=llm_conf["interface_format"],
+                    # Embedding 参数 (使用直接获取的值)
+                    emb_api_key=emb_api_key,
+                    emb_base_url=emb_base_url,
+                    emb_model_name=emb_model_name,
+                    emb_interface_format=emb_interface_format
+                )
+                
+                update_chat(answer)
+                
+            except Exception as e:
+                # 打印完整堆栈以便调试
+                traceback.print_exc() 
+                update_chat(f"发生错误: {str(e)}", is_error=True)
+
+        threading.Thread(target=run_qa, daemon=True).start()
+
+    def update_chat(text, is_error=False):
+        """线程安全更新 UI"""
+        def _update():
+            chat_box.configure(state="normal")
+            # 删除“正在翻阅...”
+            # 简单起见，直接追加新内容。为了体验更好，可以把上一行删掉，但追加也没问题。
+            prefix = "❌ Error: " if is_error else "AI: "
+            chat_box.insert("end", f"\n{prefix}{text}\n" + "-"*30 + "\n\n")
+            chat_box.see("end")
+            chat_box.configure(state="disabled")
+        top.after(0, _update)
+
+    # 按钮
+    send_btn = ctk.CTkButton(input_frame, text="发送", width=80, command=send_question)
+    send_btn.pack(side="right", padx=5, pady=5)
+    
+    # 绑定回车发送
+    input_entry.bind("<Return>", send_question)

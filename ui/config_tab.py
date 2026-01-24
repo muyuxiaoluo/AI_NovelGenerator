@@ -123,29 +123,30 @@ def build_ai_config_tab(self):
     def delete_current_config():
         """删除当前选中的配置并保存到JSON文件"""
         selected_config = self.interface_config_var.get()
-        if selected_config in self.loaded_config.get("llm_configs", {}):
-            if len(self.loaded_config["llm_configs"]) <= 1:
-                messagebox.showerror("错误", "至少需要保留一个配置!")
-                return
-                
-            confirm = messagebox.askyesno(
+        
+        if selected_config not in self.loaded_config.get("llm_configs", {}):
+            messagebox.showerror("错误", "未找到选中的配置!")
+            return
+        
+        if len(self.loaded_config["llm_configs"]) <= 1:
+            messagebox.showerror("错误", "至少需要保留一个配置!")
+            return
+        
+        confirm = messagebox.askyesno(
             "确认删除",
             f"确定要删除配置 '{selected_config}' 吗?\n此操作不可撤销!"
         )
+        
         if not confirm:
             return
-            
-        del self.loaded_config["llm_configs"][selected_config]
-        refresh_config_dropdown()
         
-        # 保存到JSON文件
         try:
+            del self.loaded_config["llm_configs"][selected_config]
+            refresh_config_dropdown()
             save_config(self.loaded_config, self.config_file)
             messagebox.showinfo("提示", f"已删除配置: {selected_config}，并已更新配置文件")
         except Exception as e:
             messagebox.showerror("错误", f"保存配置文件失败: {str(e)}")
-        else:
-            messagebox.showerror("错误", "未找到选中的配置!")
 
     def save_current_config():
         """保存当前配置的修改到JSON文件"""
@@ -346,7 +347,7 @@ def build_ai_config_tab(self):
     # 3) 接口格式
     create_label_with_help(self, self.ai_config_tab, "接口格式:", "interface_format", row_start+2, 0)
     self.interface_format_var = ctk.StringVar(value="OpenAI")
-    interface_options = ["OpenAI", "Azure OpenAI", "Ollama", "DeepSeek", "Gemini", "ML Studio"]
+    interface_options = ["OpenAI", "Azure OpenAI", "Ollama", "DeepSeek", "Gemini", "ML Studio", "硅基流动"]
     interface_dropdown = ctk.CTkOptionMenu(
         self.ai_config_tab,
         values=interface_options,
@@ -372,8 +373,8 @@ def build_ai_config_tab(self):
         self.temp_value_label.configure(text=f"{float(value):.2f}")
     temp_scale = ctk.CTkSlider(
         self.ai_config_tab, 
-        from_=0.0, 
-        to=2.0, 
+        from_=0, 
+        to=2, 
         number_of_steps=200, 
         command=update_temp_label,
         variable=self.temperature_var
@@ -547,63 +548,111 @@ def build_embeddings_config_tab(self):
     test_btn.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
 def build_config_choose_tab(self):
-
-
+    """
+    构建【模型指派】界面的具体内容
+    """
     self.config_choose.grid_rowconfigure(0, weight=0)
     self.config_choose.grid_columnconfigure(0, weight=0)
     self.config_choose.grid_columnconfigure(1, weight=1)
+
+    # 获取配置列表
     config_choose_options = list(self.loaded_config.get("llm_configs", {}).keys())
+    if not config_choose_options:
+        config_choose_options = ["Default"]
+
+    # --- 辅助：确保变量已初始化 ---
+    def ensure_var(var_name, default_val=None):
+        if not hasattr(self, var_name):
+            val = default_val if default_val else config_choose_options[0]
+            setattr(self, var_name, ctk.StringVar(value=val))
+        # 再次检查值是否有效
+        var = getattr(self, var_name)
+        if var.get() not in config_choose_options:
+            var.set(config_choose_options[0])
+
+    # 初始化所有需要的变量
+    ensure_var("architecture_llm_var")
+    ensure_var("chapter_outline_llm_var")
+    ensure_var("prompt_draft_llm_var")
+    ensure_var("refine_logic_llm_var")    # 新增
+    ensure_var("final_chapter_llm_var")   # 新增
+    ensure_var("consistency_review_llm_var")
+
+    # 1. 架构模型
     create_label_with_help(self, parent=self.config_choose, label_text="生成架构所用大模型", tooltip_key="architecture_llm_config", row=0, column=0, font=("Microsoft YaHei", 12))
     architecture_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.architecture_llm_var, font=("Microsoft YaHei", 12))
     architecture_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
 
+    # 2. 目录模型
     create_label_with_help(self, parent=self.config_choose, label_text="生成大目录所用大模型", tooltip_key="chapter_outline_llm_config", row=1, column=0, font=("Microsoft YaHei", 12))
     chapter_outline_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.chapter_outline_llm_var, font=("Microsoft YaHei", 12))
     chapter_outline_dropdown.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
 
+    # 3. 草稿模型
     create_label_with_help(self, parent=self.config_choose, label_text="生成草稿所用大模型", tooltip_key="prompt_draft_llm_config", row=2, column=0, font=("Microsoft YaHei", 12))
     prompt_draft_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.prompt_draft_llm_var, font=("Microsoft YaHei", 12))
     prompt_draft_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky="nsew")
 
-    create_label_with_help(self, parent=self.config_choose, label_text="定稿章节所用大模型", tooltip_key="final_chapter_llm_config", row=3, column=0, font=("Microsoft YaHei", 12))
+    # 4. 【新增】逻辑/选角模型
+    create_label_with_help(self, parent=self.config_choose, label_text="逻辑/选角所用大模型", tooltip_key="refine_logic_llm_config", row=3, column=0, font=("Microsoft YaHei", 12))
+    refine_logic_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.refine_logic_llm_var, font=("Microsoft YaHei", 12))
+    refine_logic_dropdown.grid(row=3, column=1, padx=5, pady=5, sticky="nsew")
+
+    # 5. 【新增】定稿模型
+    create_label_with_help(self, parent=self.config_choose, label_text="定稿章节所用大模型", tooltip_key="final_chapter_llm_config", row=4, column=0, font=("Microsoft YaHei", 12))
     final_chapter_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.final_chapter_llm_var, font=("Microsoft YaHei", 12))
-    final_chapter_dropdown.grid(row=3, column=1, padx=5, pady=5, sticky="nsew")
+    final_chapter_dropdown.grid(row=4, column=1, padx=5, pady=5, sticky="nsew")
 
-    create_label_with_help(self, parent=self.config_choose, label_text="一致性审校所用大模型", tooltip_key="consistency_review_llm_config", row=4, column=0, font=("Microsoft YaHei", 12))
+    # 6. 审校模型
+    create_label_with_help(self, parent=self.config_choose, label_text="一致性审校所用大模型", tooltip_key="consistency_review_llm_config", row=5, column=0, font=("Microsoft YaHei", 12))
     consistency_review_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.consistency_review_llm_var, font=("Microsoft YaHei", 12))
-    consistency_review_dropdown.grid(row=4, column=1, padx=5, pady=5, sticky="nsew")
+    consistency_review_dropdown.grid(row=5, column=1, padx=5, pady=5, sticky="nsew")
 
+
+    # --- 功能函数 ---
     def save_config_choose():
-        config_data = load_config(self.config_file)["choose_configs"]
-        if not config_data:
-            config_data = {}
+        full_config = load_config(self.config_file)
+        if "choose_configs" not in full_config:
+            full_config["choose_configs"] = {}
+        
+        config_data = full_config["choose_configs"]
         config_data["architecture_llm"] = self.architecture_llm_var.get()
         config_data["chapter_outline_llm"] = self.chapter_outline_llm_var.get()
         config_data["prompt_draft_llm"] = self.prompt_draft_llm_var.get()
+        
+        # 保存新增项
+        config_data["refine_logic_llm"] = self.refine_logic_llm_var.get()
         config_data["final_chapter_llm"] = self.final_chapter_llm_var.get()
+        
         config_data["consistency_review_llm"] = self.consistency_review_llm_var.get()
 
-
-        config_data_full = load_config(self.config_file)
-        config_data_full["choose_configs"] = config_data
-        save_config(config_data_full, self.config_file)
-        messagebox.showinfo("提示", "配置已保存。")
+        full_config["choose_configs"] = config_data
+        save_config(full_config, self.config_file)
+        messagebox.showinfo("提示", "模型指派配置已保存。")
 
     def refresh_config_dropdowns():
         """刷新所有配置下拉菜单"""
         config_names = list(self.loaded_config.get("llm_configs", {}).keys())
-        for dropdown in [architecture_dropdown, chapter_outline_dropdown, prompt_draft_dropdown, final_chapter_dropdown, consistency_review_dropdown]:
+        if not config_names: config_names = ["Default"]
+        
+        dropdowns = [
+            architecture_dropdown, chapter_outline_dropdown, prompt_draft_dropdown,
+            refine_logic_dropdown, final_chapter_dropdown, consistency_review_dropdown
+        ]
+        
+        for dropdown in dropdowns:
             dropdown.configure(values=config_names)
-            if config_names and dropdown.cget("variable").get() not in config_names:
+            if dropdown.cget("variable").get() not in config_names:
                 dropdown.cget("variable").set(config_names[0])
 
+    # --- 按钮 ---
     save_btn = ctk.CTkButton(
         self.config_choose, 
         text="保存配置", 
         command=save_config_choose,
         font=("Microsoft YaHei", 12)
     )
-    save_btn.grid(row=10, column=0,padx=2, pady=2, sticky="ew")
+    save_btn.grid(row=10, column=0, padx=2, pady=10, sticky="ew")
 
     refresh_btn = ctk.CTkButton(
         self.config_choose, 
@@ -611,7 +660,7 @@ def build_config_choose_tab(self):
         command=refresh_config_dropdowns,
         font=("Microsoft YaHei", 12)
     )
-    refresh_btn.grid(row=10, column=1, padx=2, pady=2, sticky="ew")
+    refresh_btn.grid(row=10, column=1, padx=2, pady=10, sticky="ew")
 
 
 
