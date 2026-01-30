@@ -45,7 +45,7 @@ def update_global_summary(
     llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
     
     prompt = summary_prompt.format(
-        old_summary=old_summary,
+        global_summary=old_summary,
         chapter_text=chapter_text
     )
 
@@ -86,7 +86,7 @@ def update_character_state(
     llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
 
     prompt = update_character_state_prompt.format(
-        old_character_state=old_state,
+        old_state=old_state,
         chapter_text=chapter_text
     )
 
@@ -105,14 +105,13 @@ def update_character_state(
 
 def save_structured_foreshadowing(filepath, novel_number, short_text, long_text):
     """
-    辅助函数：将解析出的长短线伏笔插入到文件的对应区域
+    辅助函数：将解析出的长短线伏笔整合到文件中，避免重复并持续发展
     """
     record_file = os.path.join(filepath, "foreshadowing_records.txt")
     
     # 1. 准备新内容 (如果为空则不写入该章节头)
     new_short_block = ""
     if short_text and "无" not in short_text and len(short_text) > 5:
-        # 去掉大模型可能输出的 "1. xxx" 前面的编号，或者保留均可，这里直接保留原文
         new_short_block = f"第{novel_number}章：\n{short_text}\n"
 
     new_long_block = ""
@@ -123,7 +122,7 @@ def save_structured_foreshadowing(filepath, novel_number, short_text, long_text)
         logging.info("本章无有效伏笔，跳过写入。")
         return
 
-    # 2. 读取或初始化文件
+    # 2. 读取现有文件内容
     if os.path.exists(record_file):
         content = read_file(record_file)
     else:
@@ -136,25 +135,46 @@ def save_structured_foreshadowing(filepath, novel_number, short_text, long_text)
     if header_long not in content or header_short not in content:
         content = f"{header_long}\n\n\n{header_short}\n\n"
 
-    # 3. 寻找插入点并拼接
-    # 逻辑：找到 "=== 【短线伏笔】 ===" 的位置，把它作为分界线
+    # 3. 分离长线和短线部分
     try:
         split_index = content.find(header_short)
         
-        # 长线部分 (在 split_index 之前)
+        # 分离长线和短线部分
         long_section_raw = content[:split_index].rstrip()
-        # 短线部分 (在 split_index 之后)
         short_section_raw = content[split_index:].rstrip()
 
-        # 插入长线
-        if new_long_block:
-            long_section_raw += f"\n\n{new_long_block}"
+        # 在现有部分中查找是否已有当前章节，如果有则替换
+        import re
         
-        # 插入短线
+        # 替换或添加短线伏笔
         if new_short_block:
-            short_section_raw += f"\n\n{new_short_block}"
+            # 查找当前章节是否存在
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, short_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                # 如果存在，替换整个章节内容
+                old_chapter_block = existing_chapter_match.group(0)
+                short_section_raw = short_section_raw.replace(old_chapter_block, new_short_block.strip())
+            else:
+                # 如果不存在，添加到短线部分
+                short_section_raw += f"\n\n{new_short_block}"
 
-        # 合并
+        # 替换或添加长线伏笔
+        if new_long_block:
+            # 查找当前章节是否存在
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, long_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                # 如果存在，替换整个章节内容
+                old_chapter_block = existing_chapter_match.group(0)
+                long_section_raw = long_section_raw.replace(old_chapter_block, new_long_block.strip())
+            else:
+                # 如果不存在，添加到长线部分
+                long_section_raw += f"\n\n{new_long_block}"
+
+        # 重新组合内容
         final_content = f"{long_section_raw}\n\n\n{short_section_raw}\n"
         
         save_string_to_txt(final_content, record_file)
@@ -186,13 +206,22 @@ def update_foreshadowing_records(
 
     chapter_text = read_file(chapter_file)
     
+    # 获取已有伏笔记录
+    record_file = os.path.join(filepath, "foreshadowing_records.txt")
+    existing_foreshadowing_records = ""
+    if os.path.exists(record_file):
+        existing_foreshadowing_records = read_file(record_file)
+    else:
+        existing_foreshadowing_records = "（暂无已有伏笔记录）"
+    
     # 这里的适配器建议使用逻辑较强的模型
     llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
 
     # 1. 调用 LLM
     prompt = FORESHADOWING_ANALYSIS_PROMPT.format(
         chapter_text=chapter_text,
-        novel_number=novel_number
+        novel_number=novel_number,
+        existing_foreshadowing_records=existing_foreshadowing_records
     )
 
     try:

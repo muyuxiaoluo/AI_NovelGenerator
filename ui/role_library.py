@@ -178,7 +178,7 @@ class RoleLibrary:
     def _move_to_category(self):
         """分类转移功能"""
         if not hasattr(self, 'current_role') or not self.current_role:
-            messagebox.showwarning("警告", "请先选择一个角色", parent=self.window)
+            self._show_message("warning", "警告", "请先选择一个角色")
             return
 
         new_category = self.category_combobox.get()
@@ -195,10 +195,7 @@ class RoleLibrary:
                     break
 
             if not actual_category:
-                msg = messagebox.showerror("错误", f"找不到角色 {self.current_role} 的实际存储位置", parent=self.window)
-                self.window.attributes('-topmost', 1)
-                msg.attributes('-topmost', 1)
-                self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+                self._show_message("error", "错误", f"找不到角色 {self.current_role} 的实际存储位置")
                 return
 
             old_path = os.path.join(
@@ -217,10 +214,7 @@ class RoleLibrary:
 
         # 检查是否已经在目标分类
         if os.path.exists(new_path):
-            msg = messagebox.showinfo("提示", "角色已在目标分类中", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("info", "提示", "角色已在目标分类中")
             return
 
         confirm = messagebox.askyesno(
@@ -250,10 +244,7 @@ class RoleLibrary:
                 self.category_combobox.set(self.selected_category)
                 raise e
         except Exception as e:
-            msg = messagebox.showerror("错误", f"分类转移失败：{str(e)}", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("error", "错误", f"分类转移失败：{str(e)}")
             self.category_combobox.set(self.selected_category)
 
     def import_roles(self):
@@ -743,15 +734,9 @@ class RoleLibrary:
                 os.remove(all_path)
             self.show_category(self.selected_category)
             self.preview_text.delete("1.0", "end")
-            msg = messagebox.showinfo("成功", "角色已删除", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("info", "成功", "角色已删除")
         except Exception as e:
-            msg = messagebox.showerror("错误", f"删除失败：{str(e)}", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("error", "错误", f"删除失败：{str(e)}")
 
     def _build_role_content(self):
         """构建角色文件内容"""
@@ -773,6 +758,32 @@ class RoleLibrary:
                                         content.append(f"│  ├──{entry_text}")
                     break  # 找到对应属性后跳出循环
         return content
+    
+    def _show_message(self, kind: str, title: str, text: str):
+        """
+        统一显示 messagebox 并确保消息弹窗位于顶层。
+        kind: "info" | "warning" | "error"
+        """
+        try:
+            # 先把父窗口置顶，保证 messagebox 覆盖在上面
+            self.window.attributes('-topmost', 1)
+        except Exception:
+            pass
+
+        if kind == "info":
+            messagebox.showinfo(title, text, parent=self.window)
+        elif kind == "warning":
+            messagebox.showwarning(title, text, parent=self.window)
+        elif kind == "error":
+            messagebox.showerror(title, text, parent=self.window)
+        else:
+            messagebox.showinfo(title, text, parent=self.window)
+
+        # 延迟一点再恢复父窗口的 topmost，以确保 messagebox 已显示
+        try:
+            self.window.after(200, lambda: self.window.attributes('-topmost', 0))
+        except Exception:
+            pass
 
     def _save_role_file(self, content, save_path):
         """保存角色文件"""
@@ -809,10 +820,7 @@ class RoleLibrary:
 
         new_name = self.role_name_var.get().strip()
         if not new_name:
-            msg = messagebox.showwarning("警告", "角色名称不能为空", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("warning", "警告", "角色名称不能为空")
             return
 
         # 检查角色名是否重复
@@ -958,10 +966,7 @@ class RoleLibrary:
             self.show_role(new_name)  # 刷新角色显示区域
 
         except Exception as e:
-            msg = messagebox.showerror("错误", f"重命名失败：{str(e)}", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            msg.attributes('-topmost', 1)
-            self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+            self._show_message("error", "错误", f"重命名失败：{str(e)}")
 
     def _create_new_role(self, category):
         """在指定分类创建新角色"""
@@ -1114,9 +1119,7 @@ class RoleLibrary:
         """确认删除操作"""
         selected = [item[0] for item in self.selected_del if item[1].get()]
         if not selected:
-            msg = messagebox.showwarning("警告", "请至少选择一个分类", parent=self.window)
-            self.window.attributes('-topmost', 1)
-            self.window.after(200, lambda: self.window.attributes('-topmost', 0))
+            self._show_message("warning", "警告", "请至少选择一个分类")
             return
 
         # 创建选择窗口时添加前置设置
@@ -1419,10 +1422,7 @@ class RoleLibrary:
             if isinstance(child, ctk.CTkFrame):
                 for btn in child.winfo_children():
                     if isinstance(btn, ctk.CTkButton) and btn.cget("text") == "+":
-                        msg = messagebox.showinfo("提示", "不能删除带'+'号的原始条目", parent=self.window)
-                        self.window.attributes('-topmost', 1)
-                        msg.attributes('-topmost', 1)
-                        self.window.after(200, lambda: [self.window.attributes('-topmost', 0), msg.attributes('-topmost', 0)])
+                        self._show_message("info", "提示", "不能删除带'+'号的原始条目")
                         return
 
         # 移除条目

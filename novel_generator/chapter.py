@@ -4,9 +4,7 @@
 章节草稿生成及获取历史章节文本、当前章节摘要等
 """
 import os
-import json
 import logging
-import re  # 添加re模块导入
 from llm_adapters import create_llm_adapter
 from prompt_definitions import (
     first_chapter_draft_prompt, 
@@ -32,6 +30,56 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+def extract_character_relationships(character_state_text: str) -> str:
+    """
+    从角色状态文本中提取角色之间的关系网。
+    解析格式：
+    角色名：
+    【当前状态】
+    ├──关系: 角色1（关系描述）、角色2（关系描述）
+    """
+    if not character_state_text:
+        return "（暂无角色关系网信息）"
+    
+    relationships_dict = {}
+    current_char = None
+    lines = character_state_text.split('\n')
+    
+    try:
+        for i, line in enumerate(lines):
+            # 识别活跃区/潜伏区的角色名（以 "角色名：" 结尾，不包含特殊符号）
+            if line.endswith('：') and not line.startswith('├') and not line.startswith('│') and not line.startswith('='):
+                potential_char = line.replace('：', '').strip()
+                # 排除非角色的标题行
+                if potential_char and potential_char not in ['【核心人设】', '【当前状态】']:
+                    current_char = potential_char
+                    relationships_dict[current_char] = []
+            
+            # 提取关系行（格式：├──关系: ...）
+            if current_char and '├──关系:' in line:
+                # 提取冒号后的内容
+                rel_part = line.split('├──关系:')[1].strip()
+                if rel_part:
+                    relationships_dict[current_char].append(rel_part)
+    except Exception as e:
+        logging.warning(f"解析角色关系网失败: {e}")
+        return "（角色关系网解析失败）"
+    
+    # 过滤空关系
+    relationships_dict = {k: v for k, v in relationships_dict.items() if v}
+    
+    if not relationships_dict:
+        return "（暂无角色关系网信息）"
+    
+    # 格式化输出为易读的关系网
+    result_lines = ["【人物关系网概览】"]
+    for char_name, relations in relationships_dict.items():
+        result_lines.append(f"\n{char_name}：")
+        for rel in relations:
+            result_lines.append(f"  ├─ {rel}")
+    
+    return "\n".join(result_lines)
 
 def get_last_n_chapters_text(chapters_dir: str, current_chapter_num: int, n: int = 3) -> list:
     """
@@ -59,21 +107,38 @@ def summarize_recent_chapters(
     novel_number: int,            # 新增参数
     chapter_info: dict,           # 新增参数
     next_chapter_info: dict,      # 新增参数
+    filepath: str | None = None,  # 【修复类型注解】添加|None允许可选参数
+    global_summary: str = "",    # 新增：传入全局摘要以匹配 prompt 占位符
+    character_relationships: str = "",  # 新增：角色关系网
+    previous_chapter_excerpt: str = "", # 新增：上一章结尾内容
     timeout: int = 600
 ) -> str:  # 修改返回值类型为 str，不再是 tuple
     """
-    根据前三章内容生成当前章节的精准摘要。
+    根据前三章内容生成当前章节的精准摘要。(支持伏笔注入)
     如果解析失败，则返回空字符串。
     """
     try:
         combined_text = "\n".join(chapters_text_list).strip()
-        if not combined_text:
+        if not combined_text and not global_summary:
             return ""
             
         # 限制组合文本长度
         max_combined_length = 4000
         if len(combined_text) > max_combined_length:
             combined_text = combined_text[-max_combined_length:]
+
+        # === 【新增逻辑】读取伏笔库内容 ===
+        foreshadowing_text = "（暂无伏笔记录）"
+        if filepath:
+            try:
+                record_file = os.path.join(filepath, "foreshadowing_records.txt")
+                if os.path.exists(record_file):
+                    content = read_file(record_file).strip()
+                    if content:
+                        # 截取最后 3000 字符防止 Token 溢出，或者根据模型窗口决定
+                        foreshadowing_text = content[-3000:] if len(content) > 3000 else content
+            except Exception as e:
+                logging.warning(f"摘要生成时读取伏笔库失败: {e}")
             
         llm_adapter = create_llm_adapter(
             interface_format=interface_format,
@@ -89,28 +154,69 @@ def summarize_recent_chapters(
         chapter_info = chapter_info or {}
         next_chapter_info = next_chapter_info or {}
         
-        prompt = summarize_recent_chapters_prompt.format(
-            combined_text=combined_text,
-            novel_number=novel_number,
-            chapter_title=chapter_info.get("chapter_title", "未命名"),
-            chapter_role=chapter_info.get("chapter_role", "常规章节"),
-            chapter_purpose=chapter_info.get("chapter_purpose", "内容推进"),
-            suspense_level=chapter_info.get("suspense_level", "中等"),
-            foreshadowing=chapter_info.get("foreshadowing", "无"),
-            plot_twist_level=chapter_info.get("plot_twist_level", "★☆☆☆☆"),
-            chapter_summary=chapter_info.get("chapter_summary", ""),
-            next_chapter_number=novel_number + 1,
-            next_chapter_title=next_chapter_info.get("chapter_title", "（未命名）"),
-            next_chapter_role=next_chapter_info.get("chapter_role", "过渡章节"),
-            next_chapter_purpose=next_chapter_info.get("chapter_purpose", "承上启下"),
-            next_chapter_summary=next_chapter_info.get("chapter_summary", "衔接过渡内容"),
-            next_chapter_suspense_level=next_chapter_info.get("suspense_level", "中等"),
-            next_chapter_foreshadowing=next_chapter_info.get("foreshadowing", "无特殊伏笔"),
-            next_chapter_plot_twist_level=next_chapter_info.get("plot_twist_level", "★☆☆☆☆")
-        )
+        # 使用安全的 dict 来格式化 prompt，避免因为 prompt 占位符变动导致 KeyError
+        class _SafeDict(dict):
+            def __missing__(self, key):
+                return ""
+
+        # 【关键修复】为 summarize_recent_chapters_prompt 创建专用的 prompt_values
+        # 仅包含当前章节的必要信息，不包含下一章信息，以防止 LLM 混淆
+        summarize_prompt_values = {
+            "global_summary": global_summary,
+            "previous_chapter_excerpt": previous_chapter_excerpt,
+            "novel_number": novel_number,
+            "chapter_title": chapter_info.get("chapter_title", "未命名"),
+            "chapter_role": chapter_info.get("chapter_role", "常规章节"),
+            "chapter_purpose": chapter_info.get("chapter_purpose", "内容推进"),
+            "suspense_level": chapter_info.get("suspense_level", "中等"),
+            "foreshadowing": chapter_info.get("foreshadowing", "无"),
+            "plot_twist_level": chapter_info.get("plot_twist_level", "★☆☆☆☆"),
+            "chapter_summary": chapter_info.get("chapter_summary", ""),
+            "foreshadowing_records": foreshadowing_text,
+            "character_relationships": character_relationships,  # 新增关系网
+            # 下一章信息（仅用于逻辑检查，不混入生成过程）
+            "next_chapter_number": novel_number + 1,
+            "next_chapter_title": next_chapter_info.get("chapter_title", "（未命名）"),
+            "next_chapter_role": next_chapter_info.get("chapter_role", "过渡章节"),
+        }
+        
+        # 完整的 prompt_values（用于其他 prompt）
+        prompt_values = {
+            "global_summary": global_summary,
+            "previous_chapter_excerpt": previous_chapter_excerpt,
+            "novel_number": novel_number,
+            "chapter_title": chapter_info.get("chapter_title", "未命名"),
+            "chapter_role": chapter_info.get("chapter_role", "常规章节"),
+            "chapter_purpose": chapter_info.get("chapter_purpose", "内容推进"),
+            "suspense_level": chapter_info.get("suspense_level", "中等"),
+            "foreshadowing": chapter_info.get("foreshadowing", "无"),
+            "plot_twist_level": chapter_info.get("plot_twist_level", "★☆☆☆☆"),
+            "chapter_summary": chapter_info.get("chapter_summary", ""),
+            "foreshadowing_records": foreshadowing_text,
+            "character_relationships": character_relationships,
+            # 下一章信息
+            "next_chapter_number": novel_number + 1,
+            "next_chapter_title": next_chapter_info.get("chapter_title", "（未命名）"),
+            "next_chapter_role": next_chapter_info.get("chapter_role", "过渡章节"),
+            "next_chapter_purpose": next_chapter_info.get("chapter_purpose", "承上启下"),
+            "next_chapter_summary": next_chapter_info.get("chapter_summary", "衔接过渡内容"),
+            "next_chapter_suspense_level": next_chapter_info.get("suspense_level", "中等"),
+            "next_chapter_foreshadowing": next_chapter_info.get("foreshadowing", "无特殊伏笔"),
+            "next_chapter_plot_twist_level": next_chapter_info.get("plot_twist_level", "★☆☆☆☆")
+        }
+
+        # 【关键修复】使用 summarize_prompt_values 而不是 prompt_values
+        # 这样可以防止下一章的信息泄露到 summarize_recent_chapters_prompt 中
+        prompt = summarize_recent_chapters_prompt.format_map(_SafeDict(summarize_prompt_values))
         
         response_text = invoke_with_cleaning(llm_adapter, prompt)
-        summary = extract_summary_from_response(response_text)
+        
+        # 如果您有 extract_summary_from_response 函数，可以使用它
+        # 如果没有，直接使用 response_text 也是安全的，因为 Prompt 已经要求直接输出了
+        if 'extract_summary_from_response' in globals():
+            summary = extract_summary_from_response(response_text)
+        else:
+            summary = response_text
         
         if not summary:
             logging.warning("Failed to extract summary, using full response")
@@ -361,6 +467,16 @@ def build_chapter_prompt(
     # 获取前文内容和摘要
     recent_texts = get_last_n_chapters_text(chapters_dir, novel_number, n=3)
     
+    # 获取前一章结尾
+    previous_excerpt = ""
+    for text in reversed(recent_texts):
+        if text.strip():
+            previous_excerpt = text[-800:] if len(text) > 800 else text
+            break
+    
+    # 提取角色关系网
+    character_relationships_summary = extract_character_relationships(character_state_text)
+    
     try:
         logging.info("Attempting to generate summary")
         short_summary = summarize_recent_chapters(
@@ -374,19 +490,16 @@ def build_chapter_prompt(
             novel_number=novel_number,
             chapter_info=chapter_info,
             next_chapter_info=next_chapter_info,
+            filepath=filepath,  # 【修复】添加filepath参数以支持伏笔库注入
+            global_summary=global_summary_text,
+            character_relationships=character_relationships_summary,  # 新增关系网参数
+            previous_chapter_excerpt=previous_excerpt,  # 新增参数：上一章结尾内容
             timeout=timeout
         )
         logging.info("Summary generated successfully")
     except Exception as e:
         logging.error(f"Error in summarize_recent_chapters: {str(e)}")
         short_summary = "（摘要生成失败）"
-
-    # 获取前一章结尾
-    previous_excerpt = ""
-    for text in reversed(recent_texts):
-        if text.strip():
-            previous_excerpt = text[-800:] if len(text) > 800 else text
-            break
 
     # 知识库检索和处理
     try:
@@ -604,6 +717,7 @@ def analyze_chapter_logic(
     model_name: str,
     chapter_content: str,
     filepath: str,
+    novel_number: int = 0,
     temperature: float = 0.1,  # 逻辑检查需要低温度
     max_tokens: int = 2048,
     timeout: int = 600
@@ -614,10 +728,28 @@ def analyze_chapter_logic(
     try:
         global_summary = read_file(os.path.join(filepath, "global_summary.txt"))
         character_state = read_file(os.path.join(filepath, "character_state.txt"))
+        # 尝试读取章节大纲以获取下一章概要，若不存在则传空字符串
+        directory_file = os.path.join(filepath, "Novel_directory.txt")
+        next_chapter_outline = "（无后续目录信息）"
+        try:
+            if os.path.exists(directory_file):
+                blueprint_text = read_file(directory_file)
+                # 若传入了 novel_number，则取下一章信息
+                if novel_number and novel_number > 0:
+                    next_info = get_chapter_info_from_blueprint(blueprint_text, novel_number + 1)
+                    if next_info:
+                        next_chapter_outline = f"第{novel_number+1}章《{next_info.get('chapter_title','（未命名）')}》：定位：{next_info.get('chapter_role','')}; 简述：{next_info.get('chapter_summary','') }"
+                else:
+                    # 若未传入章节号，尽量摘取前几行作为概要
+                    lines = blueprint_text.splitlines()
+                    next_chapter_outline = '\n'.join(lines[:10]) if lines else next_chapter_outline
+        except Exception:
+            next_chapter_outline = "（读取目录失败）"
 
         prompt = LOGIC_CHECK_PROMPT.format(
             global_summary=global_summary,
             character_state=character_state,
+            next_chapter_outline=next_chapter_outline,
             chapter_content=chapter_content
         )
 
@@ -631,7 +763,7 @@ def analyze_chapter_logic(
             timeout=timeout
         )
         
-        logging.info("正在进行逻辑自检...")
+        logging.info(f"开始逻辑自检，interface={interface_format}, model={model_name}")
         analysis_result = invoke_with_cleaning(llm_adapter, prompt)
         return analysis_result
 
@@ -669,7 +801,7 @@ def rewrite_chapter_with_feedback(
             timeout=timeout
         )
 
-        logging.info("正在根据反馈重写章节...")
+        logging.info(f"开始根据反馈重写章节，interface={interface_format}, model={model_name}")
         new_content = invoke_with_cleaning(llm_adapter, prompt)
         return new_content
 

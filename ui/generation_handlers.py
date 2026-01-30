@@ -157,6 +157,9 @@ def generate_chapter_draft_ui(self):
             review_key = review_config["api_key"]
             review_url = review_config["base_url"]
             review_model = review_config["model_name"]
+            # 补充审校模型的可选参数
+            review_temp = review_config.get("temperature", 0.3)
+            review_tokens = review_config.get("max_tokens", draft_tokens)
             
             # Embedding 参数
             emb_key = self.embedding_api_key_var.get().strip()
@@ -174,7 +177,7 @@ def generate_chapter_draft_ui(self):
             scene_loc = self.scene_location_var.get().strip()
             time_constr = self.time_constraint_var.get().strip()
 
-            self.safe_log(f"Step 3: 正在生成第{chap_num}章草稿提示词...")
+            self.safe_log(f"模型：{draft_model}，正在生成第{chap_num}章草稿提示词...")
 
             # === 2. 构造提示词并让用户确认 ===
             prompt_text = build_chapter_prompt(
@@ -294,7 +297,7 @@ def generate_chapter_draft_ui(self):
                 self.safe_log("生成失败：返回内容为空。")
                 return
 
-            self.safe_log("✅ 初稿生成完毕，正在进行逻辑自检...")
+            self.safe_log(f"✅模型：{draft_model}, 初稿生成完毕，正在进行逻辑自检...")
 
             # === 4. 自动逻辑自检 ===
             logic_report = analyze_chapter_logic(
@@ -304,6 +307,7 @@ def generate_chapter_draft_ui(self):
                 model_name=review_model,
                 chapter_content=draft_text,
                 filepath=filepath,
+                novel_number=chap_num,
                 timeout=draft_timeout
             )
 
@@ -346,6 +350,60 @@ def generate_chapter_draft_ui(self):
                 right_frame = ctk.CTkFrame(check_win)
                 right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
                 ctk.CTkLabel(right_frame, text="逻辑漏洞报告 (可编辑反馈意见)", font=("Microsoft YaHei", 14, "bold")).pack(pady=5)
+
+                # 解析报告中的特定段落，便于单独查看与复制
+                def _parse_report_sections(text: str) -> dict:
+                    sections = {
+                        "knowledge_pov": "",
+                        "future_conflict": "",
+                        "full": text
+                    }
+                    try:
+                        k_marker = "【知识不一致 & POV 异常】"
+                        f_marker = "【后文目录冲突】"
+                        k_idx = text.find(k_marker)
+                        f_idx = text.find(f_marker)
+                        if k_idx != -1:
+                            # 从 k_marker 到 f_marker 或 文本末尾
+                            start = k_idx + len(k_marker)
+                            end = f_idx if (f_idx != -1 and f_idx > k_idx) else len(text)
+                            sections["knowledge_pov"] = text[start:end].strip()
+                        if f_idx != -1:
+                            start = f_idx + len(f_marker)
+                            sections["future_conflict"] = text[start:].strip()
+                    except Exception:
+                        pass
+                    return sections
+
+                parsed_sections = _parse_report_sections(logic_report if logic_report else "")
+
+                # 快速查看按钮
+                btns_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+                btns_frame.pack(fill="x", padx=5, pady=(0, 4))
+
+                def _open_section_popup(title: str, content: str):
+                    popup = ctk.CTkToplevel(self.master)
+                    popup.title(title)
+                    popup.geometry("700x400")
+                    txt = ctk.CTkTextbox(popup, wrap="word")
+                    txt.pack(fill="both", expand=True, padx=8, pady=8)
+                    txt.insert("0.0", content if content else "(无内容)")
+
+                    def _copy_to_feedback():
+                        feedback_box.delete("0.0", "end")
+                        feedback_box.insert("0.0", txt.get("0.0", "end").strip())
+                        popup.destroy()
+
+                    footer = ctk.CTkFrame(popup)
+                    footer.pack(fill="x", padx=8, pady=6)
+                    ctk.CTkButton(footer, text="复制到反馈框", command=_copy_to_feedback, fg_color="#3498DB").pack(side="right", padx=6)
+                    ctk.CTkButton(footer, text="关闭", command=popup.destroy, fg_color="#95A5A6").pack(side="right")
+
+                kb_btn = ctk.CTkButton(btns_frame, text="查看 知识不一致 & POV", width=200, command=lambda: _open_section_popup("知识不一致 & POV 异常", parsed_sections.get("knowledge_pov", "")))
+                kb_btn.pack(side="right", padx=6)
+                fc_btn = ctk.CTkButton(btns_frame, text="查看 后文目录冲突", width=200, command=lambda: _open_section_popup("后文目录冲突", parsed_sections.get("future_conflict", "")))
+                fc_btn.pack(side="right", padx=6)
+
                 feedback_box = ctk.CTkTextbox(right_frame, wrap="word", font=("Microsoft YaHei", 12))
                 feedback_box.pack(fill="both", expand=True, padx=5, pady=5)
                 feedback_box.insert("0.0", logic_report)
@@ -357,28 +415,29 @@ def generate_chapter_draft_ui(self):
                 status_lbl = ctk.CTkLabel(btn_frame, text="等待操作...", text_color="gray")
                 status_lbl.pack(side="left", padx=10)
 
-                def on_rewrite():
+                def _run_rewrite_with_model(use_interface, use_key, use_url, use_model, use_temp, use_tokens, use_timeout):
                     current_content = content_box.get("0.0", "end").strip()
                     current_feedback = feedback_box.get("0.0", "end").strip()
-                    
-                    if not current_content: return
-                    
-                    status_lbl.configure(text="⏳ 正在根据反馈重写，请稍候...", text_color="blue")
-                    rewrite_btn.configure(state="disabled")
+                    if not current_content:
+                        return
+
+                    status_lbl.configure(text=f"{use_model}⏳ 正在根据反馈重写，请稍候...", text_color="blue")
+                    logic_fix_btn.configure(state="disabled")
+                    plot_refine_btn.configure(state="disabled")
                     confirm_btn.configure(state="disabled")
-                    
+
                     def run_rewrite():
                         try:
                             new_text = rewrite_chapter_with_feedback(
-                                interface_format=draft_interface,
-                                api_key=draft_key,
-                                base_url=draft_url,
-                                model_name=draft_model,
+                                interface_format=use_interface,
+                                api_key=use_key,
+                                base_url=use_url,
+                                model_name=use_model,
                                 original_content=current_content,
                                 feedback=current_feedback,
-                                temperature=draft_temp,
-                                max_tokens=draft_tokens,
-                                timeout=draft_timeout
+                                temperature=use_temp,
+                                max_tokens=use_tokens,
+                                timeout=use_timeout
                             )
                             if new_text:
                                 self.master.after(0, lambda: content_box.delete("0.0", "end"))
@@ -393,10 +452,35 @@ def generate_chapter_draft_ui(self):
                         except Exception as e:
                             self.master.after(0, lambda: status_lbl.configure(text=f"❌ 出错: {str(e)}", text_color="red"))
                         finally:
-                            self.master.after(0, lambda: rewrite_btn.configure(state="normal"))
+                            self.master.after(0, lambda: logic_fix_btn.configure(state="normal"))
+                            self.master.after(0, lambda: plot_refine_btn.configure(state="normal"))
                             self.master.after(0, lambda: confirm_btn.configure(state="normal"))
 
                     threading.Thread(target=run_rewrite, daemon=True).start()
+
+                def on_rewrite_logic():
+                    # 使用逻辑/审校模型进行修正（侧重逻辑一致性）
+                    _run_rewrite_with_model(
+                        use_interface=review_interface,
+                        use_key=review_key,
+                        use_url=review_url,
+                        use_model=review_model,
+                        use_temp=review_temp if 'review_temp' in locals() else 0.3,
+                        use_tokens=review_tokens if 'review_tokens' in locals() else draft_tokens,
+                        use_timeout=draft_timeout
+                    )
+
+                def on_rewrite_plot():
+                    # 使用初稿生成模型进行剧情微调（保持文风与拓展）
+                    _run_rewrite_with_model(
+                        use_interface=draft_interface,
+                        use_key=draft_key,
+                        use_url=draft_url,
+                        use_model=draft_model,
+                        use_temp=draft_temp,
+                        use_tokens=draft_tokens,
+                        use_timeout=draft_timeout
+                    )
 
                 def on_confirm():
                     final_content = content_box.get("0.0", "end").strip()
@@ -414,8 +498,11 @@ def generate_chapter_draft_ui(self):
                     self.safe_log(f"✅ 第{chap_num}章已确认并保存。")
                     check_win.destroy()
 
-                rewrite_btn = ctk.CTkButton(btn_frame, text="提交反馈并重写 (Rewrite)", command=on_rewrite, fg_color="#E67E22", width=200)
-                rewrite_btn.pack(side="right", padx=10)
+                logic_fix_btn = ctk.CTkButton(btn_frame, text="逻辑纠正 (Logic Fix)", command=on_rewrite_logic, fg_color="#E67E22", width=180)
+                logic_fix_btn.pack(side="right", padx=6)
+
+                plot_refine_btn = ctk.CTkButton(btn_frame, text="剧情微调 (Plot Refine)", command=on_rewrite_plot, fg_color="#8E44AD", width=180)
+                plot_refine_btn.pack(side="right", padx=6)
                 
                 confirm_btn = ctk.CTkButton(btn_frame, text="确认无误，使用此版本 (Confirm)", command=on_confirm, fg_color="#27AE60", width=200)
                 confirm_btn.pack(side="right", padx=10)
@@ -1172,6 +1259,11 @@ def show_foreshadowing_records_ui(self):
     top = ctk.CTkToplevel(self.master)
     top.title("全书伏笔线索库 (Foreshadowing Records)")
     top.geometry("700x600")
+
+    # === 【修改】 设置为从属窗口 (Transient) ===
+    # 这样它永远会在 self.master (主窗口) 之上，但不会挡住其他软件
+    top.transient(self.master)  
+    top.lift() # 首次打开时提升一下层级
     
     # 顶部说明
     ctk.CTkLabel(top, text="这里记录了每一章定稿时AI提取的伏笔线索", text_color="gray").pack(pady=5)
@@ -1206,6 +1298,10 @@ def show_novel_qa_ui(self):
     top = ctk.CTkToplevel(self.master)
     top.title("全书知识库问答 (Novel Q&A)")
     top.geometry("600x700")
+
+    # === 【修改】 设置为从属窗口 ===
+    top.transient(self.master)
+    top.lift()
     
     # 1. 聊天记录显示区
     history_frame = ctk.CTkFrame(top)
