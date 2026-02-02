@@ -4,6 +4,8 @@
 章节草稿生成及获取历史章节文本、当前章节摘要等
 """
 import os
+import re
+import json
 import logging
 from llm_adapters import create_llm_adapter
 from prompt_definitions import (
@@ -15,6 +17,8 @@ from prompt_definitions import (
     LOGIC_CHECK_PROMPT,
     REWRITE_WITH_FEEDBACK_PROMPT,
     REFINE_DIRECTORY_PROMPT,
+    ACTIVE_VERIFICATION_PLANNER_PROMPT, # 新增
+    ACTIVE_VERIFICATION_RULE_MAKER_PROMPT # 新增
 )
 from chapter_directory_parser import get_chapter_info_from_blueprint
 from novel_generator.common import invoke_with_cleaning
@@ -501,38 +505,21 @@ def build_chapter_prompt(
         logging.error(f"Error in summarize_recent_chapters: {str(e)}")
         short_summary = "（摘要生成失败）"
 
-    # 知识库检索和处理
+    # ================= 4. [修改] 主动验证逻辑 (Active Verification) =================
+    verification_constraints = "（未启用验证）"
+    
     try:
-        # 生成检索关键词
-        llm_adapter = create_llm_adapter(
-            interface_format=interface_format,
-            base_url=base_url,
-            model_name=model_name,
-            api_key=api_key,
-            temperature=0.3,
-            max_tokens=max_tokens,
-            timeout=timeout
-        )
+        # 准备验证所需的元数据
+        verif_info = {
+            "chapter_title": chapter_title,
+            "chapter_role": chapter_role,
+            "short_summary": short_summary,
+            "characters_involved": characters_involved,
+            "key_items": key_items,
+            "scene_location": scene_location
+        }
         
-        search_prompt = knowledge_search_prompt.format(
-            chapter_number=novel_number,
-            chapter_title=chapter_title,
-            characters_involved=characters_involved,
-            key_items=key_items,
-            scene_location=scene_location,
-            chapter_role=chapter_role,
-            chapter_purpose=chapter_purpose,
-            foreshadowing=foreshadowing,
-            short_summary=short_summary,
-            user_guidance=user_guidance,
-            time_constraint=time_constraint
-        )
-        
-        search_response = invoke_with_cleaning(llm_adapter, search_prompt)
-        keyword_groups = parse_search_keywords(search_response)
-
-        # 执行向量检索
-        all_contexts = []
+        # 创建 Embedding Adapter
         from embedding_adapters import create_embedding_adapter
         embedding_adapter = create_embedding_adapter(
             embedding_interface_format,
@@ -541,68 +528,21 @@ def build_chapter_prompt(
             embedding_model_name
         )
         
-        store = load_vector_store(embedding_adapter, filepath)
-        if store:
-            collection_size = store._collection.count()
-            actual_k = min(embedding_retrieval_k, max(1, collection_size))
-            
-            for group in keyword_groups:
-                # 1. 获取原始长文本 (可能是整章)
-                raw_context = get_relevant_context_from_vector_store(
-                    embedding_adapter=embedding_adapter,
-                    query=group,
-                    filepath=filepath,
-                    k=actual_k
-                )
-                
-                if raw_context:
-                    # 2. [关键修改] 执行智能截取
-                    # 将 query (如 "百草堂·内部陈设") 传进去，精准定位片段
-                    precise_context = extract_relevant_segments(raw_context, group, window_size=800)
-                    
-                    # 3. 添加标签 (保持原有逻辑)
-                    if any(kw in group.lower() for kw in ["技法", "手法", "模板"]):
-                        all_contexts.append(f"[TECHNIQUE] {precise_context}")
-                    elif any(kw in group.lower() for kw in ["设定", "技术", "世界观"]):
-                        all_contexts.append(f"[SETTING] {precise_context}")
-                    else:
-                        all_contexts.append(f"[GENERAL] {precise_context}")
-
-        # 应用内容规则 (下文保持不变)
-        processed_contexts = apply_content_rules(all_contexts, novel_number)
-        
-        # 执行知识过滤
-        chapter_info_for_filter = {
-            "chapter_number": novel_number,
-            "chapter_title": chapter_title,
-            "chapter_role": chapter_role,
-            "chapter_purpose": chapter_purpose,
-            "characters_involved": characters_involved,
-            "key_items": key_items,
-            "scene_location": scene_location,
-            "foreshadowing": foreshadowing,  # 修复拼写错误
-            "suspense_level": suspense_level,
-            "plot_twist_level": plot_twist_level,
-            "chapter_summary": chapter_summary,
-            "time_constraint": time_constraint
-        }
-        
-        filtered_context = get_filtered_knowledge_context(
+        # 执行主动验证
+        verification_constraints = perform_active_verification(
             api_key=api_key,
             base_url=base_url,
             model_name=model_name,
             interface_format=interface_format,
             embedding_adapter=embedding_adapter,
             filepath=filepath,
-            chapter_info=chapter_info_for_filter,
-            retrieved_texts=processed_contexts,
-            max_tokens=max_tokens,
+            chapter_info=verif_info,
             timeout=timeout
         )
         
     except Exception as e:
-        logging.error(f"知识处理流程异常：{str(e)}")
-        filtered_context = "（知识库处理失败）"
+        logging.error(f"Active Verification failed: {e}")
+        verification_constraints = "（验证过程异常，请忽略）"
 
     # 返回最终提示词
     return next_chapter_draft_prompt.format(
@@ -632,7 +572,10 @@ def build_chapter_prompt(
         next_chapter_foreshadowing=next_chapter_foreshadow,
         next_chapter_plot_twist_level=next_chapter_twist,
         next_chapter_summary=next_chapter_summary,
-        filtered_context=filtered_context
+        # 新增字段：注入检索到的强制约束
+        verification_constraints=verification_constraints,
+        # 旧字段：保留为空，防止 Prompt 报错
+        filtered_context="",
     )
 
 def generate_chapter_draft(
@@ -853,3 +796,97 @@ def refine_chapter_detail(
         logging.error(f"微调章节大纲失败: {str(e)}")
         return ""
     
+
+# =============== [新增函数] 执行主动验证流程 ===================
+def perform_active_verification(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    embedding_adapter,
+    filepath: str,
+    chapter_info: dict,
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> str:
+    """
+    执行主动验证 RAG 流程：
+    1. 识别风险 (Generate Questions)
+    2. 检索证据 (Vector Search)
+    3. 制定规则 (Generate Constraints)
+    """
+    logging.info("Starting Active Verification RAG process...")
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=model_name,
+        api_key=api_key,
+        temperature=0.3, # 这里的温度要低，保持理性分析
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+
+    # Step 1: 生成验证问题
+    planner_prompt = ACTIVE_VERIFICATION_PLANNER_PROMPT.format(
+        chapter_title=chapter_info.get('chapter_title'),
+        chapter_role=chapter_info.get('chapter_role'),
+        short_summary=chapter_info.get('short_summary'),
+        characters_involved=chapter_info.get('characters_involved'),
+        key_items=chapter_info.get('key_items'),
+        scene_location=chapter_info.get('scene_location')
+    )
+    
+    questions_raw = invoke_with_cleaning(llm_adapter, planner_prompt)
+    
+    # 解析列表
+    questions = []
+    try:
+        # 尝试匹配列表结构 [ ... ]
+        match = re.search(r'\[.*?\]', questions_raw, re.DOTALL)
+        if match:
+            # 注意：在生产环境中建议使用 json.loads 并确保 LLM 输出标准 JSON
+            # 这里为了容错使用了 eval，但要小心安全风险
+            try:
+                questions = json.loads(match.group(0))
+            except:
+                questions = eval(match.group(0)) 
+        else:
+            # 降级策略：如果不是列表，按行分割
+            questions = [line.strip('- ').strip() for line in questions_raw.split('\n') if '?' in line]
+    except Exception as e:
+        logging.warning(f"Failed to parse verification questions: {e}")
+        return "（自动验证失败，请参考通用设定）"
+
+    if not questions:
+        logging.info("No specific verification questions generated.")
+        return "（本章无特殊逻辑风险点）"
+
+    logging.info(f"Verification Questions: {questions}")
+
+    # Step 2 & 3: 检索并制定规则
+    constraints = []
+    
+    # 限制最多验证前 5 个问题，避免耗时过长
+    for q in questions[:5]: 
+        # 向量检索
+        context = get_relevant_context_from_vector_store(embedding_adapter, q, filepath, k=2)
+        
+        if not context:
+            continue
+
+        # 制定规则
+        rule_prompt = ACTIVE_VERIFICATION_RULE_MAKER_PROMPT.format(
+            question=q,
+            retrieved_context=context
+        )
+        
+        rule = invoke_with_cleaning(llm_adapter, rule_prompt)
+        
+        # 过滤掉无效回答
+        if "无特定约束" not in rule and "No specific constraint" not in rule and len(rule) > 5:
+            constraints.append(f"● [Query: {q}]\n  {rule}")
+
+    if not constraints:
+        return "（检索完成，未发现显著的设定冲突，请自由发挥）"
+
+    return "\n".join(constraints)

@@ -1,0 +1,2214 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: novel_generator
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+novel_generator/__init__.py
+novel_generator/architecture.py
+novel_generator/blueprint.py
+novel_generator/chapter.py
+novel_generator/common.py
+novel_generator/finalization.py
+novel_generator/knowledge.py
+novel_generator/qa.py
+novel_generator/vectorstore_utils.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="novel_generator/qa.py">
+# novel_generator/qa.py
+# -*- coding: utf-8 -*-
+import logging
+import traceback
+from llm_adapters import create_llm_adapter
+from embedding_adapters import create_embedding_adapter
+from novel_generator.common import invoke_with_cleaning
+from novel_generator.vectorstore_utils import load_vector_store
+
+# 问答专用提示词
+QA_PROMPT_TEMPLATE = """\
+你是一名熟悉这部小说的助手。请严格根据下方的【相关原文片段】来回答用户的提问。
+
+【相关原文片段】：
+{context}
+
+【用户提问】：
+{question}
+
+【回答要求】：
+1. 答案必须基于原文片段。如果原文片段中没有相关信息，请直接回答“根据现有章节内容，暂时无法找到相关信息”。
+2. 语言通顺，逻辑清晰。
+3. 不要编造原文中不存在的情节。
+
+请回答：
+"""
+
+def answer_novel_question(
+    filepath: str,
+    question: str,
+    # LLM 配置
+    llm_api_key: str, llm_base_url: str, llm_model_name: str, interface_format: str,
+    # Embedding 配置 (用于检索)
+    emb_api_key: str, emb_base_url: str, emb_model_name: str, emb_interface_format: str,
+    top_k: int = 5
+) -> str:
+    """
+    全书问答核心逻辑
+    """
+    # 1. 加载向量库
+    try:
+        embedding_adapter = create_embedding_adapter(
+            emb_interface_format, emb_api_key, emb_base_url, emb_model_name
+        )
+        
+        # === 【核心修复】参数顺序对调：先传 Adapter，再传路径 ===
+        vector_store = load_vector_store(embedding_adapter, filepath)
+        
+        if not vector_store:
+            return "错误：无法加载向量库。请确保您已经对至少一个章节进行了【定稿 (Finalize)】操作，且向量库文件存在。"
+            
+    except Exception as e:
+        logging.error(f"加载向量库失败: {traceback.format_exc()}")
+        return f"加载知识库失败: {str(e)}"
+
+    # 2. 检索相关内容 (Search)
+    try:
+        # 搜索最相关的 K 个片段
+        docs = vector_store.similarity_search(question, k=top_k)
+        if not docs:
+            return "未在知识库中检索到相关内容。"
+            
+        # 拼接上下文
+        context_text = "\n\n".join([f"---片段---\n{d.page_content}" for d in docs])
+        
+    except Exception as e:
+        logging.error(f"检索失败: {traceback.format_exc()}")
+        return f"检索失败: {str(e)}"
+
+    # 3. 调用大模型回答 (Generation)
+    try:
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=llm_base_url,
+            model_name=llm_model_name,
+            api_key=llm_api_key,
+            temperature=0.3, # 问答需要准确，温度调低
+            max_tokens=2048,
+            timeout=600
+        )
+        
+        prompt = QA_PROMPT_TEMPLATE.format(
+            context=context_text,
+            question=question
+        )
+        
+        response = invoke_with_cleaning(llm_adapter, prompt)
+        return response
+
+    except Exception as e:
+        logging.error(f"生成答案失败: {traceback.format_exc()}")
+        return f"生成答案失败: {str(e)}"
+</file>
+
+<file path="novel_generator/__init__.py">
+#novel_generator/__init__.py
+from .architecture import Novel_architecture_generate
+from .blueprint import Chapter_blueprint_generate
+from .chapter import (
+    get_last_n_chapters_text,
+    summarize_recent_chapters,
+    get_filtered_knowledge_context,
+    build_chapter_prompt,
+    generate_chapter_draft,
+    analyze_chapter_logic,
+    rewrite_chapter_with_feedback,
+    refine_chapter_detail,
+)
+from .finalization import finalize_chapter, enrich_chapter_text
+from .knowledge import import_knowledge_file
+from .vectorstore_utils import clear_vector_store
+from .qa import answer_novel_question
+</file>
+
+<file path="novel_generator/knowledge.py">
+#novel_generator/knowledge.py
+# -*- coding: utf-8 -*-
+"""
+知识文件导入至向量库（advanced_split_content、import_knowledge_file）
+"""
+import os
+import logging
+import re
+import traceback
+import nltk
+import warnings
+from utils import read_file
+from novel_generator.vectorstore_utils import load_vector_store, init_vector_store
+from langchain.docstore.document import Document
+
+# 禁用特定的Torch警告
+warnings.filterwarnings('ignore', message='.*Torch was not compiled with flash attention.*')
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+def advanced_split_content(content: str, similarity_threshold: float = 0.7, max_length: int = 500) -> list:
+    """使用基本分段策略"""
+    # nltk.download('punkt', quiet=True)
+    # nltk.download('punkt_tab', quiet=True)
+    sentences = nltk.sent_tokenize(content)
+    if not sentences:
+        return []
+
+    final_segments = []
+    current_segment = []
+    current_length = 0
+    
+    for sentence in sentences:
+        sentence_length = len(sentence)
+        if current_length + sentence_length > max_length:
+            if current_segment:
+                final_segments.append(" ".join(current_segment))
+            current_segment = [sentence]
+            current_length = sentence_length
+        else:
+            current_segment.append(sentence)
+            current_length += sentence_length
+    
+    if current_segment:
+        final_segments.append(" ".join(current_segment))
+    
+    return final_segments
+
+def import_knowledge_file(
+    embedding_api_key: str,
+    embedding_url: str,
+    embedding_interface_format: str,
+    embedding_model_name: str,
+    file_path: str,
+    filepath: str
+):
+    logging.info(f"开始导入知识库文件: {file_path}, 接口格式: {embedding_interface_format}, 模型: {embedding_model_name}")
+    if not os.path.exists(file_path):
+        logging.warning(f"知识库文件不存在: {file_path}")
+        return
+    content = read_file(file_path)
+    if not content.strip():
+        logging.warning("知识库文件内容为空。")
+        return
+    paragraphs = advanced_split_content(content)
+    from embedding_adapters import create_embedding_adapter
+    embedding_adapter = create_embedding_adapter(
+        embedding_interface_format,
+        embedding_api_key,
+        embedding_url if embedding_url else "http://localhost:11434/api",
+        embedding_model_name
+    )
+    store = load_vector_store(embedding_adapter, filepath)
+    if not store:
+        logging.info("Vector store does not exist or load failed. Initializing a new one for knowledge import...")
+        store = init_vector_store(embedding_adapter, paragraphs, filepath)
+        if store:
+            logging.info("知识库文件已成功导入至向量库(新初始化)。")
+        else:
+            logging.warning("知识库导入失败，跳过。")
+    else:
+        try:
+            docs = [Document(page_content=str(p)) for p in paragraphs]
+            store.add_documents(docs)
+            logging.info("知识库文件已成功导入至向量库(追加模式)。")
+        except Exception as e:
+            logging.warning(f"知识库导入失败: {e}")
+            traceback.print_exc()
+</file>
+
+<file path="novel_generator/blueprint.py">
+#novel_generator/blueprint.py
+# -*- coding: utf-8 -*-
+"""
+章节蓝图生成（Chapter_blueprint_generate 及辅助函数）
+"""
+import os
+import re
+import logging
+from novel_generator.common import invoke_with_cleaning
+from llm_adapters import create_llm_adapter
+from prompt_definitions import chapter_blueprint_prompt, chunked_chapter_blueprint_prompt
+from utils import read_file, clear_file_content, save_string_to_txt
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+def compute_chunk_size(number_of_chapters: int, max_tokens: int) -> int:
+    """
+    基于“每章约100 tokens”的粗略估算，
+    再结合当前max_tokens，计算分块大小：
+      chunk_size = (floor(max_tokens/100/10)*10) - 10
+    并确保 chunk_size 不会小于1或大于实际章节数。
+    """
+    tokens_per_chapter = 200.0
+    ratio = max_tokens / tokens_per_chapter
+    ratio_rounded_to_10 = int(ratio // 10) * 10
+    chunk_size = ratio_rounded_to_10 - 10
+    if chunk_size < 1:
+        chunk_size = 1
+    if chunk_size > number_of_chapters:
+        chunk_size = number_of_chapters
+    return chunk_size
+
+def limit_chapter_blueprint(blueprint_text: str, limit_chapters: int = 100) -> str:
+    """
+    从已有章节目录中只取最近的 limit_chapters 章，以避免 prompt 超长。
+    """
+    pattern = r"(第\s*\d+\s*章.*?)(?=第\s*\d+\s*章|$)"
+    chapters = re.findall(pattern, blueprint_text, flags=re.DOTALL)
+    if not chapters:
+        return blueprint_text
+    if len(chapters) <= limit_chapters:
+        return blueprint_text
+    selected = chapters[-limit_chapters:]
+    return "\n\n".join(selected).strip()
+
+def Chapter_blueprint_generate(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    llm_model: str,
+    filepath: str,
+    number_of_chapters: int,
+    user_guidance: str = "",  # 新增参数
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    timeout: int = 600
+) -> None:
+    """
+    若 Novel_directory.txt 已存在且内容非空，则表示可能是之前的部分生成结果；
+      解析其中已有的章节数，从下一个章节继续分块生成；
+      对于已有章节目录，传入时仅保留最近100章目录，避免prompt过长。
+    否则：
+      - 若章节数 <= chunk_size，直接一次性生成
+      - 若章节数 > chunk_size，进行分块生成
+    生成完成后输出至 Novel_directory.txt。
+    """
+    arch_file = os.path.join(filepath, "Novel_architecture.txt")
+    if not os.path.exists(arch_file):
+        logging.warning("Novel_architecture.txt not found. Please generate architecture first.")
+        return
+
+    architecture_text = read_file(arch_file).strip()
+    if not architecture_text:
+        logging.warning("Novel_architecture.txt is empty.")
+        return
+
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=llm_model,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+
+    filename_dir = os.path.join(filepath, "Novel_directory.txt")
+    if not os.path.exists(filename_dir):
+        open(filename_dir, "w", encoding="utf-8").close()
+
+    existing_blueprint = read_file(filename_dir).strip()
+    chunk_size = compute_chunk_size(number_of_chapters, max_tokens)
+    logging.info(f"Number of chapters = {number_of_chapters}, computed chunk_size = {chunk_size}.")
+
+    if existing_blueprint:
+        logging.info("Detected existing blueprint content. Will resume chunked generation from that point.")
+        pattern = r"第\s*(\d+)\s*章"
+        existing_chapter_numbers = re.findall(pattern, existing_blueprint)
+        existing_chapter_numbers = [int(x) for x in existing_chapter_numbers if x.isdigit()]
+        max_existing_chap = max(existing_chapter_numbers) if existing_chapter_numbers else 0
+        logging.info(f"Existing blueprint indicates up to chapter {max_existing_chap} has been generated.")
+        final_blueprint = existing_blueprint
+        current_start = max_existing_chap + 1
+        while current_start <= number_of_chapters:
+            current_end = min(current_start + chunk_size - 1, number_of_chapters)
+            limited_blueprint = limit_chapter_blueprint(final_blueprint, 100)
+            chunk_prompt = chunked_chapter_blueprint_prompt.format(
+                novel_architecture=architecture_text,
+                chapter_list=limited_blueprint,
+                number_of_chapters=number_of_chapters,
+                n=current_start,
+                m=current_end,
+                user_guidance=user_guidance  # 新增参数
+            )
+            logging.info(f"Generating chapters [{current_start}..{current_end}] in a chunk...")
+            chunk_result = invoke_with_cleaning(llm_adapter, chunk_prompt)
+            if not chunk_result.strip():
+                logging.warning(f"Chunk generation for chapters [{current_start}..{current_end}] is empty.")
+                clear_file_content(filename_dir)
+                save_string_to_txt(final_blueprint.strip(), filename_dir)
+                return
+            final_blueprint += "\n\n" + chunk_result.strip()
+            clear_file_content(filename_dir)
+            save_string_to_txt(final_blueprint.strip(), filename_dir)
+            current_start = current_end + 1
+
+        logging.info("All chapters blueprint have been generated (resumed chunked).")
+        return
+
+    if chunk_size >= number_of_chapters:
+        prompt = chapter_blueprint_prompt.format(
+            novel_architecture=architecture_text,
+            number_of_chapters=number_of_chapters,
+            user_guidance=user_guidance  # 新增参数
+        )
+        blueprint_text = invoke_with_cleaning(llm_adapter, prompt)
+        if not blueprint_text.strip():
+            logging.warning("Chapter blueprint generation result is empty.")
+            return
+
+        clear_file_content(filename_dir)
+        save_string_to_txt(blueprint_text, filename_dir)
+        logging.info("Novel_directory.txt (chapter blueprint) has been generated successfully (single-shot).")
+        return
+
+    logging.info("Will generate chapter blueprint in chunked mode from scratch.")
+    final_blueprint = ""
+    current_start = 1
+    while current_start <= number_of_chapters:
+        current_end = min(current_start + chunk_size - 1, number_of_chapters)
+        limited_blueprint = limit_chapter_blueprint(final_blueprint, 100)
+        chunk_prompt = chunked_chapter_blueprint_prompt.format(
+            novel_architecture=architecture_text,
+            chapter_list=limited_blueprint,
+            number_of_chapters=number_of_chapters,
+            n=current_start,
+            m=current_end,
+            user_guidance=user_guidance  # 新增参数
+        )
+        logging.info(f"Generating chapters [{current_start}..{current_end}] in a chunk...")
+        chunk_result = invoke_with_cleaning(llm_adapter, chunk_prompt)
+        if not chunk_result.strip():
+            logging.warning(f"Chunk generation for chapters [{current_start}..{current_end}] is empty.")
+            clear_file_content(filename_dir)
+            save_string_to_txt(final_blueprint.strip(), filename_dir)
+            return
+        if final_blueprint.strip():
+            final_blueprint += "\n\n" + chunk_result.strip()
+        else:
+            final_blueprint = chunk_result.strip()
+        clear_file_content(filename_dir)
+        save_string_to_txt(final_blueprint.strip(), filename_dir)
+        current_start = current_end + 1
+
+    logging.info("Novel_directory.txt (chapter blueprint) has been generated successfully (chunked).")
+</file>
+
+<file path="novel_generator/vectorstore_utils.py">
+#novel_generator/vectorstore_utils.py
+# -*- coding: utf-8 -*-
+"""
+向量库相关操作（初始化、更新、检索、清空、文本切分等）
+"""
+import os
+import logging
+import traceback
+import nltk
+import numpy as np
+import re
+import ssl
+import requests
+import warnings
+from langchain_chroma import Chroma
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+# 禁用特定的Torch警告
+warnings.filterwarnings('ignore', message='.*Torch was not compiled with flash attention.*')
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # 禁用tokenizer并行警告
+
+from chromadb.config import Settings
+from langchain.docstore.document import Document
+from sklearn.metrics.pairwise import cosine_similarity
+from .common import call_with_retry
+
+def get_vectorstore_dir(filepath: str) -> str:
+    """获取 vectorstore 路径"""
+    return os.path.join(filepath, "vectorstore")
+
+def clear_vector_store(filepath: str) -> bool:
+    """清空 清空向量库"""
+    import shutil
+    store_dir = get_vectorstore_dir(filepath)
+    if not os.path.exists(store_dir):
+        logging.info("No vector store found to clear.")
+        return False
+    try:
+        shutil.rmtree(store_dir)
+        logging.info(f"Vector store directory '{store_dir}' removed.")
+        return True
+    except Exception as e:
+        logging.error(f"无法删除向量库文件夹，请关闭程序后手动删除 {store_dir}。\n {str(e)}")
+        traceback.print_exc()
+        return False
+
+def init_vector_store(embedding_adapter, texts, filepath: str):
+    """
+    在 filepath 下创建/加载一个 Chroma 向量库并插入 texts。
+    如果Embedding失败，则返回 None，不中断任务。
+    """
+    from langchain.embeddings.base import Embeddings as LCEmbeddings
+
+    store_dir = get_vectorstore_dir(filepath)
+    os.makedirs(store_dir, exist_ok=True)
+    documents = [Document(page_content=str(t)) for t in texts]
+
+    try:
+        class LCEmbeddingWrapper(LCEmbeddings):
+            def embed_documents(self, texts):
+                return call_with_retry(
+                    func=embedding_adapter.embed_documents,
+                    max_retries=3,
+                    fallback_return=[],
+                    texts=texts
+                )
+            def embed_query(self, query: str):
+                res = call_with_retry(
+                    func=embedding_adapter.embed_query,
+                    max_retries=3,
+                    fallback_return=[],
+                    query=query
+                )
+                return res
+
+        chroma_embedding = LCEmbeddingWrapper()
+        vectorstore = Chroma.from_documents(
+            documents,
+            embedding=chroma_embedding,
+            persist_directory=store_dir,
+            client_settings=Settings(anonymized_telemetry=False),
+            collection_name="novel_collection"
+        )
+        return vectorstore
+    except Exception as e:
+        logging.warning(f"Init vector store failed: {e}")
+        traceback.print_exc()
+        return None
+
+def load_vector_store(embedding_adapter, filepath: str):
+    """
+    读取已存在的 Chroma 向量库。若不存在则返回 None。
+    如果加载失败（embedding 或IO问题），则返回 None。
+    """
+    from langchain.embeddings.base import Embeddings as LCEmbeddings
+    store_dir = get_vectorstore_dir(filepath)
+    if not os.path.exists(store_dir):
+        logging.info("Vector store not found. Will return None.")
+        return None
+
+    try:
+        class LCEmbeddingWrapper(LCEmbeddings):
+            def embed_documents(self, texts):
+                return call_with_retry(
+                    func=embedding_adapter.embed_documents,
+                    max_retries=3,
+                    fallback_return=[],
+                    texts=texts
+                )
+            def embed_query(self, query: str):
+                res = call_with_retry(
+                    func=embedding_adapter.embed_query,
+                    max_retries=3,
+                    fallback_return=[],
+                    query=query
+                )
+                return res
+
+        chroma_embedding = LCEmbeddingWrapper()
+        return Chroma(
+            persist_directory=store_dir,
+            embedding_function=chroma_embedding,
+            client_settings=Settings(anonymized_telemetry=False),
+            collection_name="novel_collection"
+        )
+    except Exception as e:
+        logging.warning(f"Failed to load vector store: {e}")
+        traceback.print_exc()
+        return None
+
+def split_by_length(text: str, max_length: int = 500):
+    """按照 max_length 切分文本"""
+    segments = []
+    start_idx = 0
+    while start_idx < len(text):
+        end_idx = min(start_idx + max_length, len(text))
+        segment = text[start_idx:end_idx]
+        segments.append(segment.strip())
+        start_idx = end_idx
+    return segments
+
+def split_text_for_vectorstore(chapter_text: str, max_length: int = 500, similarity_threshold: float = 0.7):
+    """
+    对新的章节文本进行分段后,再用于存入向量库。
+    使用 embedding 进行文本相似度计算。
+    """
+    if not chapter_text.strip():
+        return []
+    
+    # --- 修改开始：自动检查并下载缺失的 NLTK 数据包 ---
+    try:
+        # 检查是否已存在 punkt_tab，不存在才下载
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        # quiet=True 防止在控制台打印大量下载进度条
+        nltk.download('punkt_tab', quiet=True)
+        
+    try:
+        # 保险起见，同时也检查基础的 punkt 包
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+    # --- 修改结束 ---
+
+    sentences = nltk.sent_tokenize(chapter_text)
+    if not sentences:
+        return []
+    
+    # 直接按长度分段,不做相似度合并
+    final_segments = []
+    current_segment = []
+    current_length = 0
+    
+    for sentence in sentences:
+        sentence_length = len(sentence)
+        if current_length + sentence_length > max_length:
+            if current_segment:
+                final_segments.append(" ".join(current_segment))
+            current_segment = [sentence]
+            current_length = sentence_length
+        else:
+            current_segment.append(sentence)
+            current_length += sentence_length
+    
+    if current_segment:
+        final_segments.append(" ".join(current_segment))
+    
+    return final_segments
+
+def update_vector_store(embedding_adapter, new_chapter: str, filepath: str):
+    """
+    将最新章节文本插入到向量库中。
+    若库不存在则初始化；若初始化/更新失败，则跳过。
+    """
+    from utils import read_file, clear_file_content, save_string_to_txt
+    splitted_texts = split_text_for_vectorstore(new_chapter)
+    if not splitted_texts:
+        logging.warning("No valid text to insert into vector store. Skipping.")
+        return
+
+    store = load_vector_store(embedding_adapter, filepath)
+    if not store:
+        logging.info("Vector store does not exist or failed to load. Initializing a new one for new chapter...")
+        store = init_vector_store(embedding_adapter, splitted_texts, filepath)
+        if not store:
+            logging.warning("Init vector store failed, skip embedding.")
+        else:
+            logging.info("New vector store created successfully.")
+        return
+
+    try:
+        docs = [Document(page_content=str(t)) for t in splitted_texts]
+        store.add_documents(docs)
+        logging.info("Vector store updated with the new chapter splitted segments.")
+    except Exception as e:
+        logging.warning(f"Failed to update vector store: {e}")
+        traceback.print_exc()
+
+def get_relevant_context_from_vector_store(embedding_adapter, query: str, filepath: str, k: int = 2) -> str:
+    """
+    从向量库中检索与 query 最相关的 k 条文本，拼接后返回。
+    如果向量库加载/检索失败，则返回空字符串。
+    最终只返回最多2000字符的检索片段。
+    """
+    store = load_vector_store(embedding_adapter, filepath)
+    if not store:
+        logging.info("No vector store found or load failed. Returning empty context.")
+        return ""
+
+    try:
+        docs = store.similarity_search(query, k=k)
+        if not docs:
+            logging.info(f"No relevant documents found for query '{query}'. Returning empty context.")
+            return ""
+        combined = "\n".join([d.page_content for d in docs])
+        if len(combined) > 2000:
+            combined = combined[:2000]
+        return combined
+    except Exception as e:
+        logging.warning(f"Similarity search failed: {e}")
+        traceback.print_exc()
+        return ""
+
+def _get_sentence_transformer(model_name: str = 'paraphrase-MiniLM-L6-v2'):
+    """获取sentence transformer模型，处理SSL问题"""
+    try:
+        # 设置torch环境变量
+        os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
+        os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "0"
+        
+        # 禁用SSL验证
+        ssl._create_default_https_context = ssl._create_unverified_context
+        
+        # ...existing code...
+    except Exception as e:
+        logging.error(f"Failed to load sentence transformer model: {e}")
+        traceback.print_exc()
+        return None
+</file>
+
+<file path="novel_generator/architecture.py">
+#novel_generator/architecture.py
+# -*- coding: utf-8 -*-
+"""
+小说总体架构生成（Novel_architecture_generate 及相关辅助函数）
+"""
+import os
+import json
+import logging
+import traceback
+from novel_generator.common import invoke_with_cleaning
+from llm_adapters import create_llm_adapter
+from prompt_definitions import (
+    core_seed_prompt,
+    character_dynamics_prompt,
+    world_building_prompt,
+    plot_architecture_prompt,
+    create_character_state_prompt
+)
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+from utils import clear_file_content, save_string_to_txt
+
+def load_partial_architecture_data(filepath: str) -> dict:
+    """
+    从 filepath 下的 partial_architecture.json 读取已有的阶段性数据。
+    如果文件不存在或无法解析，返回空 dict。
+    """
+    partial_file = os.path.join(filepath, "partial_architecture.json")
+    if not os.path.exists(partial_file):
+        return {}
+    try:
+        with open(partial_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        logging.warning(f"Failed to load partial_architecture.json: {e}")
+        return {}
+
+def save_partial_architecture_data(filepath: str, data: dict):
+    """
+    将阶段性数据写入 partial_architecture.json。
+    """
+    partial_file = os.path.join(filepath, "partial_architecture.json")
+    try:
+        with open(partial_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning(f"Failed to save partial_architecture.json: {e}")
+
+def Novel_architecture_generate(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    llm_model: str,
+    topic: str,
+    genre: str,
+    number_of_chapters: int,
+    word_number: int,
+    filepath: str,
+    user_guidance: str = "",  # 新增参数
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> None:
+    """
+    依次调用:
+      1. core_seed_prompt
+      2. character_dynamics_prompt
+      3. world_building_prompt
+      4. plot_architecture_prompt
+    若在中间任何一步报错且重试多次失败，则将已经生成的内容写入 partial_architecture.json 并退出；
+    下次调用时可从该步骤继续。
+    最终输出 Novel_architecture.txt
+
+    新增：
+    - 在完成角色动力学设定后，依据该角色体系，使用 create_character_state_prompt 生成初始角色状态表，
+      并存储到 character_state.txt，后续维护更新。
+    """
+    os.makedirs(filepath, exist_ok=True)
+    partial_data = load_partial_architecture_data(filepath)
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=llm_model,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+    # Step1: 核心种子
+    if "core_seed_result" not in partial_data:
+        logging.info("Step1: Generating core_seed_prompt (核心种子) ...")
+        prompt_core = core_seed_prompt.format(
+            topic=topic,
+            genre=genre,
+            number_of_chapters=number_of_chapters,
+            word_number=word_number,
+            user_guidance=user_guidance  # 修复：添加内容指导
+        )
+        core_seed_result = invoke_with_cleaning(llm_adapter, prompt_core)
+        if not core_seed_result.strip():
+            logging.warning("core_seed_prompt generation failed and returned empty.")
+            save_partial_architecture_data(filepath, partial_data)
+            return
+        partial_data["core_seed_result"] = core_seed_result
+        save_partial_architecture_data(filepath, partial_data)
+    else:
+        logging.info("Step1 already done. Skipping...")
+    # Step2: 角色动力学
+    if "character_dynamics_result" not in partial_data:
+        logging.info("Step2: Generating character_dynamics_prompt ...")
+        prompt_character = character_dynamics_prompt.format(
+            core_seed=partial_data["core_seed_result"].strip(),
+            user_guidance=user_guidance
+        )
+        character_dynamics_result = invoke_with_cleaning(llm_adapter, prompt_character)
+        if not character_dynamics_result.strip():
+            logging.warning("character_dynamics_prompt generation failed.")
+            save_partial_architecture_data(filepath, partial_data)
+            return
+        partial_data["character_dynamics_result"] = character_dynamics_result
+        save_partial_architecture_data(filepath, partial_data)
+    else:
+        logging.info("Step2 already done. Skipping...")
+    # 生成初始角色状态
+    if "character_dynamics_result" in partial_data and "character_state_result" not in partial_data:
+        logging.info("Generating initial character state from character dynamics ...")
+        prompt_char_state_init = create_character_state_prompt.format(
+            character_dynamics=partial_data["character_dynamics_result"].strip()
+        )
+        character_state_init = invoke_with_cleaning(llm_adapter, prompt_char_state_init)
+        if not character_state_init.strip():
+            logging.warning("create_character_state_prompt generation failed.")
+            save_partial_architecture_data(filepath, partial_data)
+            return
+        partial_data["character_state_result"] = character_state_init
+        character_state_file = os.path.join(filepath, "character_state.txt")
+        clear_file_content(character_state_file)
+        save_string_to_txt(character_state_init, character_state_file)
+        save_partial_architecture_data(filepath, partial_data)
+        logging.info("Initial character state created and saved.")
+    # Step3: 世界观
+    if "world_building_result" not in partial_data:
+        logging.info("Step3: Generating world_building_prompt ...")
+        prompt_world = world_building_prompt.format(
+            core_seed=partial_data["core_seed_result"].strip(),
+            user_guidance=user_guidance  # 修复：添加用户指导
+        )
+        world_building_result = invoke_with_cleaning(llm_adapter, prompt_world)
+        if not world_building_result.strip():
+            logging.warning("world_building_prompt generation failed.")
+            save_partial_architecture_data(filepath, partial_data)
+            return
+        partial_data["world_building_result"] = world_building_result
+        save_partial_architecture_data(filepath, partial_data)
+    else:
+        logging.info("Step3 already done. Skipping...")
+    # Step4: 三幕式情节
+    if "plot_arch_result" not in partial_data:
+        logging.info("Step4: Generating plot_architecture_prompt ...")
+        prompt_plot = plot_architecture_prompt.format(
+            core_seed=partial_data["core_seed_result"].strip(),
+            character_dynamics=partial_data["character_dynamics_result"].strip(),
+            world_building=partial_data["world_building_result"].strip(),
+            user_guidance=user_guidance  # 修复：添加用户指导
+        )
+        plot_arch_result = invoke_with_cleaning(llm_adapter, prompt_plot)
+        if not plot_arch_result.strip():
+            logging.warning("plot_architecture_prompt generation failed.")
+            save_partial_architecture_data(filepath, partial_data)
+            return
+        partial_data["plot_arch_result"] = plot_arch_result
+        save_partial_architecture_data(filepath, partial_data)
+    else:
+        logging.info("Step4 already done. Skipping...")
+
+    core_seed_result = partial_data["core_seed_result"]
+    character_dynamics_result = partial_data["character_dynamics_result"]
+    world_building_result = partial_data["world_building_result"]
+    plot_arch_result = partial_data["plot_arch_result"]
+
+    final_content = (
+        "#=== 0) 小说设定 ===\n"
+        f"主题：{topic},类型：{genre},篇幅：约{number_of_chapters}章（每章{word_number}字）\n\n"
+        "#=== 1) 核心种子 ===\n"
+        f"{core_seed_result}\n\n"
+        "#=== 2) 角色动力学 ===\n"
+        f"{character_dynamics_result}\n\n"
+        "#=== 3) 世界观 ===\n"
+        f"{world_building_result}\n\n"
+        "#=== 4) 三幕式情节架构 ===\n"
+        f"{plot_arch_result}\n"
+    )
+
+    arch_file = os.path.join(filepath, "Novel_architecture.txt")
+    clear_file_content(arch_file)
+    save_string_to_txt(final_content, arch_file)
+    logging.info("Novel_architecture.txt has been generated successfully.")
+
+    partial_arch_file = os.path.join(filepath, "partial_architecture.json")
+    if os.path.exists(partial_arch_file):
+        os.remove(partial_arch_file)
+        logging.info("partial_architecture.json removed (all steps completed).")
+</file>
+
+<file path="novel_generator/common.py">
+#novel_generator/common.py
+# -*- coding: utf-8 -*-
+"""
+通用重试、清洗、日志工具
+"""
+import logging
+import re
+import time
+import traceback
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+def call_with_retry(func, max_retries=3, sleep_time=2, fallback_return=None, **kwargs):
+    """
+    通用的重试机制封装。
+    :param func: 要执行的函数
+    :param max_retries: 最大重试次数
+    :param sleep_time: 重试前的等待秒数
+    :param fallback_return: 如果多次重试仍失败时的返回值
+    :param kwargs: 传给func的命名参数
+    :return: func的结果，若失败则返回 fallback_return
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            return func(**kwargs)
+        except Exception as e:
+            logging.warning(f"[call_with_retry] Attempt {attempt} failed with error: {e}")
+            traceback.print_exc()
+            if attempt < max_retries:
+                time.sleep(sleep_time)
+            else:
+                logging.error("Max retries reached, returning fallback_return.")
+                return fallback_return
+
+def remove_think_tags(text: str) -> str:
+    """移除 <think>...</think> 包裹的内容"""
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+
+def debug_log(prompt: str, response_content: str):
+    logging.info(
+        f"\n[#########################################  Prompt  #########################################]\n{prompt}\n"
+    )
+    logging.info(
+        f"\n[######################################### Response #########################################]\n{response_content}\n"
+    )
+
+def invoke_with_cleaning(llm_adapter, prompt: str, max_retries: int = 3) -> str:
+    """调用 LLM 并清理返回结果"""
+    print("\n" + "="*50)
+    print("发送到 LLM 的提示词:")
+    print("-"*50)
+    print(prompt)
+    print("="*50 + "\n")
+    
+    result = ""
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            result = llm_adapter.invoke(prompt)
+            print("\n" + "="*50)
+            print("LLM 返回的内容:")
+            print("-"*50)
+            print(result)
+            print("="*50 + "\n")
+            
+            # 清理结果中的特殊格式标记
+            result = result.replace("```", "").strip()
+            if result:
+                return result
+            retry_count += 1
+        except Exception as e:
+            print(f"调用失败 ({retry_count + 1}/{max_retries}): {str(e)}")
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise e
+    
+    return result
+</file>
+
+<file path="novel_generator/chapter.py">
+# novel_generator/chapter.py
+# -*- coding: utf-8 -*-
+"""
+章节草稿生成及获取历史章节文本、当前章节摘要等
+"""
+import os
+import logging
+from llm_adapters import create_llm_adapter
+from prompt_definitions import (
+    first_chapter_draft_prompt, 
+    next_chapter_draft_prompt, 
+    summarize_recent_chapters_prompt,
+    knowledge_filter_prompt,
+    knowledge_search_prompt,
+    LOGIC_CHECK_PROMPT,
+    REWRITE_WITH_FEEDBACK_PROMPT,
+    REFINE_DIRECTORY_PROMPT,
+)
+from chapter_directory_parser import get_chapter_info_from_blueprint
+from novel_generator.common import invoke_with_cleaning
+from utils import extract_relevant_segments, read_file, clear_file_content, save_string_to_txt
+from novel_generator.vectorstore_utils import (
+    get_relevant_context_from_vector_store,
+    load_vector_store  # 添加导入
+)
+logging.basicConfig(
+    filename='app.log',      # 日志文件名
+    filemode='a',            # 追加模式（'w' 会覆盖）
+    level=logging.INFO,      # 记录 INFO 及以上级别的日志
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+def extract_character_relationships(character_state_text: str) -> str:
+    """
+    从角色状态文本中提取角色之间的关系网。
+    解析格式：
+    角色名：
+    【当前状态】
+    ├──关系: 角色1（关系描述）、角色2（关系描述）
+    """
+    if not character_state_text:
+        return "（暂无角色关系网信息）"
+    
+    relationships_dict = {}
+    current_char = None
+    lines = character_state_text.split('\n')
+    
+    try:
+        for i, line in enumerate(lines):
+            # 识别活跃区/潜伏区的角色名（以 "角色名：" 结尾，不包含特殊符号）
+            if line.endswith('：') and not line.startswith('├') and not line.startswith('│') and not line.startswith('='):
+                potential_char = line.replace('：', '').strip()
+                # 排除非角色的标题行
+                if potential_char and potential_char not in ['【核心人设】', '【当前状态】']:
+                    current_char = potential_char
+                    relationships_dict[current_char] = []
+            
+            # 提取关系行（格式：├──关系: ...）
+            if current_char and '├──关系:' in line:
+                # 提取冒号后的内容
+                rel_part = line.split('├──关系:')[1].strip()
+                if rel_part:
+                    relationships_dict[current_char].append(rel_part)
+    except Exception as e:
+        logging.warning(f"解析角色关系网失败: {e}")
+        return "（角色关系网解析失败）"
+    
+    # 过滤空关系
+    relationships_dict = {k: v for k, v in relationships_dict.items() if v}
+    
+    if not relationships_dict:
+        return "（暂无角色关系网信息）"
+    
+    # 格式化输出为易读的关系网
+    result_lines = ["【人物关系网概览】"]
+    for char_name, relations in relationships_dict.items():
+        result_lines.append(f"\n{char_name}：")
+        for rel in relations:
+            result_lines.append(f"  ├─ {rel}")
+    
+    return "\n".join(result_lines)
+
+def get_last_n_chapters_text(chapters_dir: str, current_chapter_num: int, n: int = 3) -> list:
+    """
+    从目录 chapters_dir 中获取最近 n 章的文本内容，返回文本列表。
+    """
+    texts = []
+    start_chap = max(1, current_chapter_num - n)
+    for c in range(start_chap, current_chapter_num):
+        chap_file = os.path.join(chapters_dir, f"chapter_{c}.txt")
+        if os.path.exists(chap_file):
+            text = read_file(chap_file).strip()
+            texts.append(text)
+        else:
+            texts.append("")
+    return texts
+
+def summarize_recent_chapters(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    temperature: float,
+    max_tokens: int,
+    chapters_text_list: list,
+    novel_number: int,            # 新增参数
+    chapter_info: dict,           # 新增参数
+    next_chapter_info: dict,      # 新增参数
+    filepath: str | None = None,  # 【修复类型注解】添加|None允许可选参数
+    global_summary: str = "",    # 新增：传入全局摘要以匹配 prompt 占位符
+    character_relationships: str = "",  # 新增：角色关系网
+    previous_chapter_excerpt: str = "", # 新增：上一章结尾内容
+    timeout: int = 600
+) -> str:  # 修改返回值类型为 str，不再是 tuple
+    """
+    根据前三章内容生成当前章节的精准摘要。(支持伏笔注入)
+    如果解析失败，则返回空字符串。
+    """
+    try:
+        combined_text = "\n".join(chapters_text_list).strip()
+        if not combined_text and not global_summary:
+            return ""
+            
+        # 限制组合文本长度
+        max_combined_length = 4000
+        if len(combined_text) > max_combined_length:
+            combined_text = combined_text[-max_combined_length:]
+
+        # === 【新增逻辑】读取伏笔库内容 ===
+        foreshadowing_text = "（暂无伏笔记录）"
+        if filepath:
+            try:
+                record_file = os.path.join(filepath, "foreshadowing_records.txt")
+                if os.path.exists(record_file):
+                    content = read_file(record_file).strip()
+                    if content:
+                        # 截取最后 3000 字符防止 Token 溢出，或者根据模型窗口决定
+                        foreshadowing_text = content[-3000:] if len(content) > 3000 else content
+            except Exception as e:
+                logging.warning(f"摘要生成时读取伏笔库失败: {e}")
+            
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        # 确保所有参数都有默认值
+        chapter_info = chapter_info or {}
+        next_chapter_info = next_chapter_info or {}
+        
+        # 使用安全的 dict 来格式化 prompt，避免因为 prompt 占位符变动导致 KeyError
+        class _SafeDict(dict):
+            def __missing__(self, key):
+                return ""
+
+        # 【关键修复】为 summarize_recent_chapters_prompt 创建专用的 prompt_values
+        # 仅包含当前章节的必要信息，不包含下一章信息，以防止 LLM 混淆
+        summarize_prompt_values = {
+            "global_summary": global_summary,
+            "previous_chapter_excerpt": previous_chapter_excerpt,
+            "novel_number": novel_number,
+            "chapter_title": chapter_info.get("chapter_title", "未命名"),
+            "chapter_role": chapter_info.get("chapter_role", "常规章节"),
+            "chapter_purpose": chapter_info.get("chapter_purpose", "内容推进"),
+            "suspense_level": chapter_info.get("suspense_level", "中等"),
+            "foreshadowing": chapter_info.get("foreshadowing", "无"),
+            "plot_twist_level": chapter_info.get("plot_twist_level", "★☆☆☆☆"),
+            "chapter_summary": chapter_info.get("chapter_summary", ""),
+            "foreshadowing_records": foreshadowing_text,
+            "character_relationships": character_relationships,  # 新增关系网
+            # 下一章信息（仅用于逻辑检查，不混入生成过程）
+            "next_chapter_number": novel_number + 1,
+            "next_chapter_title": next_chapter_info.get("chapter_title", "（未命名）"),
+            "next_chapter_role": next_chapter_info.get("chapter_role", "过渡章节"),
+        }
+        
+        # 完整的 prompt_values（用于其他 prompt）
+        prompt_values = {
+            "global_summary": global_summary,
+            "previous_chapter_excerpt": previous_chapter_excerpt,
+            "novel_number": novel_number,
+            "chapter_title": chapter_info.get("chapter_title", "未命名"),
+            "chapter_role": chapter_info.get("chapter_role", "常规章节"),
+            "chapter_purpose": chapter_info.get("chapter_purpose", "内容推进"),
+            "suspense_level": chapter_info.get("suspense_level", "中等"),
+            "foreshadowing": chapter_info.get("foreshadowing", "无"),
+            "plot_twist_level": chapter_info.get("plot_twist_level", "★☆☆☆☆"),
+            "chapter_summary": chapter_info.get("chapter_summary", ""),
+            "foreshadowing_records": foreshadowing_text,
+            "character_relationships": character_relationships,
+            # 下一章信息
+            "next_chapter_number": novel_number + 1,
+            "next_chapter_title": next_chapter_info.get("chapter_title", "（未命名）"),
+            "next_chapter_role": next_chapter_info.get("chapter_role", "过渡章节"),
+            "next_chapter_purpose": next_chapter_info.get("chapter_purpose", "承上启下"),
+            "next_chapter_summary": next_chapter_info.get("chapter_summary", "衔接过渡内容"),
+            "next_chapter_suspense_level": next_chapter_info.get("suspense_level", "中等"),
+            "next_chapter_foreshadowing": next_chapter_info.get("foreshadowing", "无特殊伏笔"),
+            "next_chapter_plot_twist_level": next_chapter_info.get("plot_twist_level", "★☆☆☆☆")
+        }
+
+        # 【关键修复】使用 summarize_prompt_values 而不是 prompt_values
+        # 这样可以防止下一章的信息泄露到 summarize_recent_chapters_prompt 中
+        prompt = summarize_recent_chapters_prompt.format_map(_SafeDict(summarize_prompt_values))
+        
+        response_text = invoke_with_cleaning(llm_adapter, prompt)
+        
+        # 如果您有 extract_summary_from_response 函数，可以使用它
+        # 如果没有，直接使用 response_text 也是安全的，因为 Prompt 已经要求直接输出了
+        if 'extract_summary_from_response' in globals():
+            summary = extract_summary_from_response(response_text)
+        else:
+            summary = response_text
+        
+        if not summary:
+            logging.warning("Failed to extract summary, using full response")
+            return response_text[:2000]  # 限制长度
+            
+        return summary[:2000]  # 限制摘要长度
+        
+    except Exception as e:
+        logging.error(f"Error in summarize_recent_chapters: {str(e)}")
+        return ""
+
+def extract_summary_from_response(response_text: str) -> str:
+    """从响应文本中提取摘要部分"""
+    if not response_text:
+        return ""
+        
+    # 查找摘要标记
+    summary_markers = [
+        "当前章节摘要:", 
+        "章节摘要:",
+        "摘要:",
+        "本章摘要:"
+    ]
+    
+    for marker in summary_markers:
+        if (marker in response_text):
+            parts = response_text.split(marker, 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+    
+    return response_text.strip()
+
+def format_chapter_info(chapter_info: dict) -> str:
+    """将章节信息字典格式化为文本"""
+    template = """
+章节编号：第{number}章
+章节标题：《{title}》
+章节定位：{role}
+核心作用：{purpose}
+主要人物：{characters}
+关键道具：{items}
+场景地点：{location}
+伏笔设计：{foreshadow}
+悬念密度：{suspense}
+转折程度：{twist}
+章节简述：{summary}
+"""
+    return template.format(
+        number=chapter_info.get('chapter_number', '未知'),
+        title=chapter_info.get('chapter_title', '未知'),
+        role=chapter_info.get('chapter_role', '未知'),
+        purpose=chapter_info.get('chapter_purpose', '未知'),
+        characters=chapter_info.get('characters_involved', '未指定'),
+        items=chapter_info.get('key_items', '未指定'),
+        location=chapter_info.get('scene_location', '未指定'),
+        foreshadow=chapter_info.get('foreshadowing', '无'),
+        suspense=chapter_info.get('suspense_level', '一般'),
+        twist=chapter_info.get('plot_twist_level', '★☆☆☆☆'),
+        summary=chapter_info.get('chapter_summary', '未提供')
+    )
+
+def parse_search_keywords(response_text: str) -> list:
+    """解析新版关键词格式（示例输入：'科技公司·数据泄露\n地下实验室·基因编辑'）"""
+    return [
+        line.strip().replace('·', ' ')
+        for line in response_text.strip().split('\n')
+        if '·' in line
+    ][:5]  # 最多取5组
+
+def apply_content_rules(texts: list, novel_number: int) -> list:
+    """
+    [修改版] 移除硬编码的跳过逻辑。
+    保留原始内容，只做简单的去重或标记，把判断交给 LLM。
+    """
+    processed = []
+    seen_hashes = set()
+    
+    for text in texts:
+        # 1. 简单去重
+        clean_text = text.strip()
+        text_hash = hash(clean_text)
+        if text_hash in seen_hashes:
+            continue
+        seen_hashes.add(text_hash)
+        
+        # 2. 移除所有 [SKIP] / [MOD] 标记逻辑
+        # 只要检索到了，就说明向量认为它相关，直接透传给 LLM
+        processed.append(clean_text)
+            
+    return processed
+
+def apply_knowledge_rules(contexts: list, chapter_num: int) -> list:
+    """
+    [修改版] 废弃基于章节距离的过滤。
+    只要是检索出来的，说明向量相似度高，都应该保留给 Prompt 处理。
+    """
+    # 直接返回，不做任何删减
+    return contexts
+
+def get_filtered_knowledge_context(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    embedding_adapter,
+    filepath: str,
+    chapter_info: dict,
+    retrieved_texts: list,
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> str:
+    """优化后的知识过滤处理"""
+    # 1. 如果没有检索到内容，直接返回
+    if not retrieved_texts:
+        return "（无相关知识库内容，请基于前文设定创作）"
+
+    try:
+        # 2. 调用修改后的规则（现在只是简单的去重和标记）
+        # 注意：这里不再传入 chapter_num，因为新版函数不需要它
+        processed_texts = apply_content_rules(retrieved_texts, chapter_info.get('chapter_number', 0))
+
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=0.1, # 再次降低温度，强制其“死板”
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        # 3. 格式化检索文本：保留更多长度，不要随意截断
+        # 只有当总长度极大时才进行截断
+        formatted_texts = []
+        for i, text in enumerate(processed_texts, 1):
+            # 允许单条检索内容更长，以便保留环境描写的全貌
+            clean_text = text.strip()
+            formatted_texts.append(f"--- 片段 {i} ---\n{clean_text}")
+
+        all_retrieved_text = "\n".join(formatted_texts)
+
+        # 4. 构造 Prompt
+        formatted_chapter_info = (
+            f"章节：第{chapter_info.get('chapter_number')}章 {chapter_info.get('chapter_title')}\n"
+            f"场景：{chapter_info.get('scene_location', '未知')}\n"
+            f"涉及人物：{chapter_info.get('characters_involved', '未知')}\n"
+            f"关键道具：{chapter_info.get('key_items', '无')}"
+        )
+
+        prompt = knowledge_filter_prompt.format(
+            chapter_info=formatted_chapter_info,
+            retrieved_texts=all_retrieved_text
+        )
+        
+        filtered_content = invoke_with_cleaning(llm_adapter, prompt)
+        return filtered_content if filtered_content else "（知识内容过滤后为空）"
+        
+    except Exception as e:
+        logging.error(f"Error in knowledge filtering: {str(e)}")
+        # 降级策略：如果过滤失败，直接返回前2条原始检索结果，保证至少有东西可用
+        fallback = "\n".join(retrieved_texts[:2])
+        return f"[过滤失败，显示原始检索]:\n{fallback}"
+
+def build_chapter_prompt(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    filepath: str,
+    novel_number: int,
+    word_number: int,
+    temperature: float,
+    user_guidance: str,
+    characters_involved: str,
+    key_items: str,
+    scene_location: str,
+    time_constraint: str,
+    embedding_api_key: str,
+    embedding_url: str,
+    embedding_interface_format: str,
+    embedding_model_name: str,
+    embedding_retrieval_k: int = 2,
+    interface_format: str = "openai",
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> str:
+    """
+    构造当前章节的请求提示词（完整实现版）
+    修改重点：
+    1. 优化知识库检索流程
+    2. 新增内容重复检测机制
+    3. 集成提示词应用规则
+    """
+    # 读取基础文件
+    arch_file = os.path.join(filepath, "Novel_architecture.txt")
+    novel_architecture_text = read_file(arch_file)
+    directory_file = os.path.join(filepath, "Novel_directory.txt")
+    blueprint_text = read_file(directory_file)
+    global_summary_file = os.path.join(filepath, "global_summary.txt")
+    global_summary_text = read_file(global_summary_file)
+    character_state_file = os.path.join(filepath, "character_state.txt")
+    character_state_text = read_file(character_state_file)
+    
+    # 获取章节信息
+    chapter_info = get_chapter_info_from_blueprint(blueprint_text, novel_number)
+    chapter_title = chapter_info["chapter_title"]
+    chapter_role = chapter_info["chapter_role"]
+    chapter_purpose = chapter_info["chapter_purpose"]
+    suspense_level = chapter_info["suspense_level"]
+    foreshadowing = chapter_info["foreshadowing"]
+    plot_twist_level = chapter_info["plot_twist_level"]
+    chapter_summary = chapter_info["chapter_summary"]
+
+    # 获取下一章节信息
+    next_chapter_number = novel_number + 1
+    next_chapter_info = get_chapter_info_from_blueprint(blueprint_text, next_chapter_number)
+    next_chapter_title = next_chapter_info.get("chapter_title", "（未命名）")
+    next_chapter_role = next_chapter_info.get("chapter_role", "过渡章节")
+    next_chapter_purpose = next_chapter_info.get("chapter_purpose", "承上启下")
+    next_chapter_suspense = next_chapter_info.get("suspense_level", "中等")
+    next_chapter_foreshadow = next_chapter_info.get("foreshadowing", "无特殊伏笔")
+    next_chapter_twist = next_chapter_info.get("plot_twist_level", "★☆☆☆☆")
+    next_chapter_summary = next_chapter_info.get("chapter_summary", "衔接过渡内容")
+
+    # 创建章节目录
+    chapters_dir = os.path.join(filepath, "chapters")
+    os.makedirs(chapters_dir, exist_ok=True)
+
+    # 第一章特殊处理
+    if novel_number == 1:
+        return first_chapter_draft_prompt.format(
+            novel_number=novel_number,
+            word_number=word_number,
+            chapter_title=chapter_title,
+            chapter_role=chapter_role,
+            chapter_purpose=chapter_purpose,
+            suspense_level=suspense_level,
+            foreshadowing=foreshadowing,
+            plot_twist_level=plot_twist_level,
+            chapter_summary=chapter_summary,
+            characters_involved=characters_involved,
+            key_items=key_items,
+            scene_location=scene_location,
+            time_constraint=time_constraint,
+            user_guidance=user_guidance,
+            novel_setting=novel_architecture_text
+        )
+
+    # 获取前文内容和摘要
+    recent_texts = get_last_n_chapters_text(chapters_dir, novel_number, n=3)
+    
+    # 获取前一章结尾
+    previous_excerpt = ""
+    for text in reversed(recent_texts):
+        if text.strip():
+            previous_excerpt = text[-800:] if len(text) > 800 else text
+            break
+    
+    # 提取角色关系网
+    character_relationships_summary = extract_character_relationships(character_state_text)
+    
+    try:
+        logging.info("Attempting to generate summary")
+        short_summary = summarize_recent_chapters(
+            interface_format=interface_format,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            chapters_text_list=recent_texts,
+            novel_number=novel_number,
+            chapter_info=chapter_info,
+            next_chapter_info=next_chapter_info,
+            filepath=filepath,  # 【修复】添加filepath参数以支持伏笔库注入
+            global_summary=global_summary_text,
+            character_relationships=character_relationships_summary,  # 新增关系网参数
+            previous_chapter_excerpt=previous_excerpt,  # 新增参数：上一章结尾内容
+            timeout=timeout
+        )
+        logging.info("Summary generated successfully")
+    except Exception as e:
+        logging.error(f"Error in summarize_recent_chapters: {str(e)}")
+        short_summary = "（摘要生成失败）"
+
+    # 知识库检索和处理
+    try:
+        # 生成检索关键词
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        search_prompt = knowledge_search_prompt.format(
+            chapter_number=novel_number,
+            chapter_title=chapter_title,
+            characters_involved=characters_involved,
+            key_items=key_items,
+            scene_location=scene_location,
+            chapter_role=chapter_role,
+            chapter_purpose=chapter_purpose,
+            foreshadowing=foreshadowing,
+            short_summary=short_summary,
+            user_guidance=user_guidance,
+            time_constraint=time_constraint
+        )
+        
+        search_response = invoke_with_cleaning(llm_adapter, search_prompt)
+        keyword_groups = parse_search_keywords(search_response)
+
+        # 执行向量检索
+        all_contexts = []
+        from embedding_adapters import create_embedding_adapter
+        embedding_adapter = create_embedding_adapter(
+            embedding_interface_format,
+            embedding_api_key,
+            embedding_url,
+            embedding_model_name
+        )
+        
+        store = load_vector_store(embedding_adapter, filepath)
+        if store:
+            collection_size = store._collection.count()
+            actual_k = min(embedding_retrieval_k, max(1, collection_size))
+            
+            for group in keyword_groups:
+                # 1. 获取原始长文本 (可能是整章)
+                raw_context = get_relevant_context_from_vector_store(
+                    embedding_adapter=embedding_adapter,
+                    query=group,
+                    filepath=filepath,
+                    k=actual_k
+                )
+                
+                if raw_context:
+                    # 2. [关键修改] 执行智能截取
+                    # 将 query (如 "百草堂·内部陈设") 传进去，精准定位片段
+                    precise_context = extract_relevant_segments(raw_context, group, window_size=800)
+                    
+                    # 3. 添加标签 (保持原有逻辑)
+                    if any(kw in group.lower() for kw in ["技法", "手法", "模板"]):
+                        all_contexts.append(f"[TECHNIQUE] {precise_context}")
+                    elif any(kw in group.lower() for kw in ["设定", "技术", "世界观"]):
+                        all_contexts.append(f"[SETTING] {precise_context}")
+                    else:
+                        all_contexts.append(f"[GENERAL] {precise_context}")
+
+        # 应用内容规则 (下文保持不变)
+        processed_contexts = apply_content_rules(all_contexts, novel_number)
+        
+        # 执行知识过滤
+        chapter_info_for_filter = {
+            "chapter_number": novel_number,
+            "chapter_title": chapter_title,
+            "chapter_role": chapter_role,
+            "chapter_purpose": chapter_purpose,
+            "characters_involved": characters_involved,
+            "key_items": key_items,
+            "scene_location": scene_location,
+            "foreshadowing": foreshadowing,  # 修复拼写错误
+            "suspense_level": suspense_level,
+            "plot_twist_level": plot_twist_level,
+            "chapter_summary": chapter_summary,
+            "time_constraint": time_constraint
+        }
+        
+        filtered_context = get_filtered_knowledge_context(
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            interface_format=interface_format,
+            embedding_adapter=embedding_adapter,
+            filepath=filepath,
+            chapter_info=chapter_info_for_filter,
+            retrieved_texts=processed_contexts,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+    except Exception as e:
+        logging.error(f"知识处理流程异常：{str(e)}")
+        filtered_context = "（知识库处理失败）"
+
+    # 返回最终提示词
+    return next_chapter_draft_prompt.format(
+        user_guidance=user_guidance if user_guidance else "无特殊指导",
+        global_summary=global_summary_text,
+        previous_chapter_excerpt=previous_excerpt,
+        character_state=character_state_text,
+        short_summary=short_summary,
+        novel_number=novel_number,
+        chapter_title=chapter_title,
+        chapter_role=chapter_role,
+        chapter_purpose=chapter_purpose,
+        suspense_level=suspense_level,
+        foreshadowing=foreshadowing,
+        plot_twist_level=plot_twist_level,
+        chapter_summary=chapter_summary,
+        word_number=word_number,
+        characters_involved=characters_involved,
+        key_items=key_items,
+        scene_location=scene_location,
+        time_constraint=time_constraint,
+        next_chapter_number=next_chapter_number,
+        next_chapter_title=next_chapter_title,
+        next_chapter_role=next_chapter_role,
+        next_chapter_purpose=next_chapter_purpose,
+        next_chapter_suspense_level=next_chapter_suspense,
+        next_chapter_foreshadowing=next_chapter_foreshadow,
+        next_chapter_plot_twist_level=next_chapter_twist,
+        next_chapter_summary=next_chapter_summary,
+        filtered_context=filtered_context
+    )
+
+def generate_chapter_draft(
+    api_key: str,
+    base_url: str,
+    model_name: str, 
+    filepath: str,
+    novel_number: int,
+    word_number: int,
+    temperature: float,
+    user_guidance: str,
+    characters_involved: str,
+    key_items: str,
+    scene_location: str,
+    time_constraint: str,
+    embedding_api_key: str,
+    embedding_url: str,
+    embedding_interface_format: str,
+    embedding_model_name: str,
+    embedding_retrieval_k: int = 2,
+    interface_format: str = "openai",
+    max_tokens: int = 2048,
+    timeout: int = 600,
+    custom_prompt_text: str | None = None
+) -> str:
+    """
+    生成章节草稿，支持自定义提示词
+    """
+    if custom_prompt_text is None:
+        prompt_text = build_chapter_prompt(
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            filepath=filepath,
+            novel_number=novel_number,
+            word_number=word_number,
+            temperature=temperature,
+            user_guidance=user_guidance,
+            characters_involved=characters_involved,
+            key_items=key_items,
+            scene_location=scene_location,
+            time_constraint=time_constraint,
+            embedding_api_key=embedding_api_key,
+            embedding_url=embedding_url,
+            embedding_interface_format=embedding_interface_format,
+            embedding_model_name=embedding_model_name,
+            embedding_retrieval_k=embedding_retrieval_k,
+            interface_format=interface_format,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+    else:
+        prompt_text = custom_prompt_text
+
+    chapters_dir = os.path.join(filepath, "chapters")
+    os.makedirs(chapters_dir, exist_ok=True)
+
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=model_name,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+
+    chapter_content = invoke_with_cleaning(llm_adapter, prompt_text)
+    if not chapter_content.strip():
+        logging.warning("Generated chapter draft is empty.")
+    chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+    clear_file_content(chapter_file)
+    save_string_to_txt(chapter_content, chapter_file)
+    logging.info(f"[Draft] Chapter {novel_number} generated as a draft.")
+    return chapter_content
+
+
+def analyze_chapter_logic(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    chapter_content: str,
+    filepath: str,
+    novel_number: int = 0,
+    temperature: float = 0.1,  # 逻辑检查需要低温度
+    max_tokens: int = 2048,
+    timeout: int = 600
+) -> str:
+    """
+    调用大模型对生成的章节进行逻辑自检
+    """
+    try:
+        global_summary = read_file(os.path.join(filepath, "global_summary.txt"))
+        character_state = read_file(os.path.join(filepath, "character_state.txt"))
+        # 尝试读取章节大纲以获取下一章概要，若不存在则传空字符串
+        directory_file = os.path.join(filepath, "Novel_directory.txt")
+        next_chapter_outline = "（无后续目录信息）"
+        try:
+            if os.path.exists(directory_file):
+                blueprint_text = read_file(directory_file)
+                # 若传入了 novel_number，则取下一章信息
+                if novel_number and novel_number > 0:
+                    next_info = get_chapter_info_from_blueprint(blueprint_text, novel_number + 1)
+                    if next_info:
+                        next_chapter_outline = f"第{novel_number+1}章《{next_info.get('chapter_title','（未命名）')}》：定位：{next_info.get('chapter_role','')}; 简述：{next_info.get('chapter_summary','') }"
+                else:
+                    # 若未传入章节号，尽量摘取前几行作为概要
+                    lines = blueprint_text.splitlines()
+                    next_chapter_outline = '\n'.join(lines[:10]) if lines else next_chapter_outline
+        except Exception:
+            next_chapter_outline = "（读取目录失败）"
+
+        prompt = LOGIC_CHECK_PROMPT.format(
+            global_summary=global_summary,
+            character_state=character_state,
+            next_chapter_outline=next_chapter_outline,
+            chapter_content=chapter_content
+        )
+
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        logging.info(f"开始逻辑自检，interface={interface_format}, model={model_name}")
+        analysis_result = invoke_with_cleaning(llm_adapter, prompt)
+        return analysis_result
+
+    except Exception as e:
+        logging.error(f"逻辑自检失败: {str(e)}")
+        return f"逻辑自检发生错误: {str(e)}"
+
+def rewrite_chapter_with_feedback(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    original_content: str,
+    feedback: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    timeout: int = 600
+) -> str:
+    """
+    根据反馈意见重写章节
+    """
+    try:
+        prompt = REWRITE_WITH_FEEDBACK_PROMPT.format(
+            original_content=original_content,
+            feedback=feedback
+        )
+
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+
+        logging.info(f"开始根据反馈重写章节，interface={interface_format}, model={model_name}")
+        new_content = invoke_with_cleaning(llm_adapter, prompt)
+        return new_content
+
+    except Exception as e:
+        logging.error(f"重写失败: {str(e)}")
+        return ""
+    
+
+def refine_chapter_detail(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    chapter_range: str,         # 修改：传入范围描述，如 "第5-7章"
+    novel_architecture: str,
+    global_summary: str,
+    current_outline: str,
+    user_instruction: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,     # 增加 token 限制，因为多章节内容较多
+    timeout: int = 600
+) -> str:
+    """
+    根据用户意见微调章节大纲 (支持多章节)
+    """
+    try:
+        llm_adapter = create_llm_adapter(
+            interface_format=interface_format,
+            base_url=base_url,
+            model_name=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        
+        prompt = REFINE_DIRECTORY_PROMPT.format(
+            chapter_range=chapter_range,
+            novel_architecture=novel_architecture if novel_architecture else "（暂无架构信息）",
+            global_summary=global_summary if global_summary else "（暂无剧情摘要）",
+            current_outline=current_outline,
+            user_instruction=user_instruction
+        )
+        
+        logging.info(f"正在微调大纲范围: {chapter_range} ...")
+        refined_content = invoke_with_cleaning(llm_adapter, prompt)
+        return refined_content
+    except Exception as e:
+        logging.error(f"微调章节大纲失败: {str(e)}")
+        return ""
+</file>
+
+<file path="novel_generator/finalization.py">
+# novel_generator/finalization.py
+# -*- coding: utf-8 -*-
+"""
+定稿章节和扩写章节（finalize_chapter、enrich_chapter_text）
+[V3.0 分步执行 + 结构化伏笔库版]
+"""
+import os
+import logging
+import re
+from llm_adapters import create_llm_adapter
+from embedding_adapters import create_embedding_adapter
+# 确保 prompt_definitions 里包含您最新的 FORESHADOWING_ANALYSIS_PROMPT
+from prompt_definitions import summary_prompt, update_character_state_prompt, FORESHADOWING_ANALYSIS_PROMPT
+from novel_generator.common import invoke_with_cleaning
+from utils import read_file, clear_file_content, save_string_to_txt, append_text_to_file
+from novel_generator.vectorstore_utils import update_vector_store
+
+# -----------------------------------------------------------------------------
+# 1. 独立功能：更新全局摘要
+# -----------------------------------------------------------------------------
+def update_global_summary(
+    novel_number: int,
+    filepath: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    temperature: float = 0.5,
+    max_tokens: int = 4096,
+    timeout: int = 600
+):
+    logging.info(f"开始单独更新摘要: 第 {novel_number} 章")
+    
+    chapters_dir = os.path.join(filepath, "chapters")
+    chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+    
+    if not os.path.exists(chapter_file):
+        logging.error(f"找不到章节文件: {chapter_file}")
+        return
+
+    chapter_text = read_file(chapter_file)
+    global_summary_file = os.path.join(filepath, "global_summary.txt")
+    old_summary = read_file(global_summary_file)
+
+    llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
+    
+    prompt = summary_prompt.format(
+        global_summary=old_summary,
+        chapter_text=chapter_text
+    )
+
+    try:
+        new_summary = invoke_with_cleaning(llm_adapter, prompt)
+        if new_summary:
+            save_string_to_txt(new_summary, global_summary_file)
+            logging.info("全局摘要更新完成。")
+    except Exception as e:
+        logging.error(f"摘要更新失败: {e}")
+
+
+# -----------------------------------------------------------------------------
+# 2. 独立功能：更新角色状态
+# -----------------------------------------------------------------------------
+def update_character_state(
+    novel_number: int,
+    filepath: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    temperature: float = 0.5,
+    max_tokens: int = 4096,
+    timeout: int = 600
+):
+    logging.info(f"开始单独更新角色状态: 第 {novel_number} 章")
+
+    chapters_dir = os.path.join(filepath, "chapters")
+    chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+    if not os.path.exists(chapter_file):
+        return
+
+    chapter_text = read_file(chapter_file)
+    char_state_file = os.path.join(filepath, "character_state.txt")
+    old_state = read_file(char_state_file)
+
+    llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
+
+    prompt = update_character_state_prompt.format(
+        old_state=old_state,
+        chapter_text=chapter_text
+    )
+
+    try:
+        new_state = invoke_with_cleaning(llm_adapter, prompt)
+        if new_state:
+            save_string_to_txt(new_state, char_state_file)
+            logging.info("角色状态表更新完成。")
+    except Exception as e:
+        logging.error(f"角色状态更新失败: {e}")
+
+
+# -----------------------------------------------------------------------------
+# 3. 独立功能：更新伏笔 (结构化解析版)
+# -----------------------------------------------------------------------------
+
+def save_structured_foreshadowing(filepath, novel_number, short_text, long_text):
+    """
+    辅助函数：将解析出的长短线伏笔整合到文件中，避免重复并持续发展
+    """
+    record_file = os.path.join(filepath, "foreshadowing_records.txt")
+    
+    # 1. 准备新内容 (如果为空则不写入该章节头)
+    new_short_block = ""
+    if short_text and "无" not in short_text and len(short_text) > 5:
+        new_short_block = f"第{novel_number}章：\n{short_text}\n"
+
+    new_long_block = ""
+    if long_text and "无" not in long_text and len(long_text) > 5:
+        new_long_block = f"第{novel_number}章：\n{long_text}\n"
+
+    if not new_short_block and not new_long_block:
+        logging.info("本章无有效伏笔，跳过写入。")
+        return
+
+    # 2. 读取现有文件内容
+    if os.path.exists(record_file):
+        content = read_file(record_file)
+    else:
+        content = ""
+
+    header_long = "=== 【长线伏笔】 ==="
+    header_short = "=== 【短线伏笔】 ==="
+
+    # 初始化模板
+    if header_long not in content or header_short not in content:
+        content = f"{header_long}\n\n\n{header_short}\n\n"
+
+    # 3. 分离长线和短线部分
+    try:
+        split_index = content.find(header_short)
+        
+        # 分离长线和短线部分
+        long_section_raw = content[:split_index].rstrip()
+        short_section_raw = content[split_index:].rstrip()
+
+        # 在现有部分中查找是否已有当前章节，如果有则替换
+        import re
+        
+        # 替换或添加短线伏笔
+        if new_short_block:
+            # 查找当前章节是否存在
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, short_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                # 如果存在，替换整个章节内容
+                old_chapter_block = existing_chapter_match.group(0)
+                short_section_raw = short_section_raw.replace(old_chapter_block, new_short_block.strip())
+            else:
+                # 如果不存在，添加到短线部分
+                short_section_raw += f"\n\n{new_short_block}"
+
+        # 替换或添加长线伏笔
+        if new_long_block:
+            # 查找当前章节是否存在
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, long_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                # 如果存在，替换整个章节内容
+                old_chapter_block = existing_chapter_match.group(0)
+                long_section_raw = long_section_raw.replace(old_chapter_block, new_long_block.strip())
+            else:
+                # 如果不存在，添加到长线部分
+                long_section_raw += f"\n\n{new_long_block}"
+
+        # 重新组合内容
+        final_content = f"{long_section_raw}\n\n\n{short_section_raw}\n"
+        
+        save_string_to_txt(final_content, record_file)
+        logging.info(f"伏笔库已更新 (结构化存储) - 第{novel_number}章")
+
+    except Exception as e:
+        logging.error(f"伏笔文件解析写入错误: {e}")
+        # 降级：如果解析坏了，直接追加到末尾防止丢数据
+        append_text_to_file(f"\n\n【第{novel_number}章补录】\n{long_text}\n{short_text}", record_file)
+
+
+def update_foreshadowing_records(
+    novel_number: int,
+    filepath: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    temperature: float = 0.5,
+    max_tokens: int = 4096,
+    timeout: int = 600
+):
+    logging.info(f"开始单独分析伏笔: 第 {novel_number} 章")
+
+    chapters_dir = os.path.join(filepath, "chapters")
+    chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+    if not os.path.exists(chapter_file):
+        return
+
+    chapter_text = read_file(chapter_file)
+    
+    # 获取已有伏笔记录
+    record_file = os.path.join(filepath, "foreshadowing_records.txt")
+    existing_foreshadowing_records = ""
+    if os.path.exists(record_file):
+        existing_foreshadowing_records = read_file(record_file)
+    else:
+        existing_foreshadowing_records = "（暂无已有伏笔记录）"
+    
+    # 这里的适配器建议使用逻辑较强的模型
+    llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
+
+    # 1. 调用 LLM
+    prompt = FORESHADOWING_ANALYSIS_PROMPT.format(
+        chapter_text=chapter_text,
+        novel_number=novel_number,
+        existing_foreshadowing_records=existing_foreshadowing_records
+    )
+
+    try:
+        result = invoke_with_cleaning(llm_adapter, prompt)
+        if not result:
+            return
+
+        # 2. 解析文本 (Regex)
+        # 您的提示词格式为：
+        # 【短线伏笔】：
+        # ...
+        # 【长线伏笔】：
+        # ...
+        
+        # 提取短线内容
+        short_match = re.search(r"【短线伏笔】：\s*(.*?)\s*(?=【长线伏笔】|$)", result, re.DOTALL)
+        short_content = short_match.group(1).strip() if short_match else ""
+
+        # 提取长线内容
+        long_match = re.search(r"【长线伏笔】：\s*(.*?)\s*(?=---|[-]{3,}|$)", result, re.DOTALL)
+        long_content = long_match.group(1).strip() if long_match else ""
+
+        # 3. 结构化保存
+        save_structured_foreshadowing(filepath, novel_number, short_content, long_content)
+
+    except Exception as e:
+        logging.error(f"伏笔分析失败: {e}")
+
+
+# -----------------------------------------------------------------------------
+# 4. 主入口：章节定稿 (依次调用)
+# -----------------------------------------------------------------------------
+def finalize_chapter(
+    novel_number: int,
+    word_number: int,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    temperature: float,
+    filepath: str,
+    embedding_api_key: str,
+    embedding_url: str,
+    embedding_interface_format: str,
+    embedding_model_name: str,
+    interface_format: str,
+    max_tokens: int,
+    timeout: int = 600
+):
+    """
+    分步定稿：摘要 -> 角色 -> 伏笔 -> 向量库
+    """
+    # 1. 更新摘要
+    update_global_summary(novel_number, filepath, api_key, base_url, model_name, interface_format, temperature, max_tokens, timeout)
+    
+    # 2. 更新角色
+    update_character_state(novel_number, filepath, api_key, base_url, model_name, interface_format, temperature, max_tokens, timeout)
+    
+    # 3. [修改] 更新伏笔 (支持长短线分类)
+    update_foreshadowing_records(novel_number, filepath, api_key, base_url, model_name, interface_format, temperature, max_tokens, timeout)
+
+    # 4. 向量入库
+    # 这里需要单独创建一个 embedding adapter
+    ingest_chapter_to_vector_store(novel_number, filepath, embedding_api_key, embedding_url, embedding_interface_format, embedding_model_name)
+
+    logging.info(f"Chapter {novel_number} finalization process completed.")
+
+
+def ingest_chapter_to_vector_store(novel_number, filepath, api_key, base_url, interface_format, model_name):
+    """
+    辅助函数：向量入库
+    """
+    try:
+        chapters_dir = os.path.join(filepath, "chapters")
+        chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+        if not os.path.exists(chapter_file):
+            return
+        chapter_text = read_file(chapter_file)
+        
+        logging.info(f"正在将第 {novel_number} 章存入向量库...")
+        
+        emb_adapter = create_embedding_adapter(interface_format, api_key, base_url, model_name)
+        update_vector_store(emb_adapter, chapter_text, filepath)
+        
+        logging.info("向量库更新完成。")
+    except Exception as e:
+        logging.error(f"向量入库失败: {e}")
+
+
+# -----------------------------------------------------------------------------
+# 5. 扩写功能
+# -----------------------------------------------------------------------------
+def enrich_chapter_text(
+    chapter_text: str,
+    word_number: int,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    temperature: float,
+    interface_format: str,
+    max_tokens: int,
+    timeout: int=600
+) -> str:
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=model_name,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+    prompt = f"""以下章节文本较短，请在保持剧情连贯的前提下进行扩写，使其更充实，接近 {word_number} 字左右，仅给出最终文本，不要解释任何内容。：
+原内容：
+{chapter_text}
+"""
+    enriched_text = invoke_with_cleaning(llm_adapter, prompt)
+    return enriched_text if enriched_text else chapter_text
+</file>
+
+</files>

@@ -3,13 +3,13 @@
 import logging
 from typing import Optional
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
+from pydantic import SecretStr
 from google import genai
 from google.genai import types
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.inference.models import SystemMessage, UserMessage
 from openai import OpenAI
-import requests
 
 
 def check_base_url(url: str) -> str:
@@ -52,9 +52,9 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
         self._client = ChatOpenAI(
             model=self.model_name,
-            api_key=self.api_key,
+            api_key=SecretStr(self.api_key),  # 修改此处
             base_url=self.base_url,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout
         )
@@ -64,7 +64,13 @@ class DeepSeekAdapter(BaseLLMAdapter):
         if not response:
             logging.warning("No response from DeepSeekAdapter.")
             return ""
-        return response.content
+        # 确保 content 是字符串类型
+        content = response.content
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            return str(content)
+        return ""
 
 class OpenAIAdapter(BaseLLMAdapter):
     """
@@ -80,19 +86,26 @@ class OpenAIAdapter(BaseLLMAdapter):
 
         self._client = ChatOpenAI(
             model=self.model_name,
-            api_key=self.api_key,
+            api_key=SecretStr(self.api_key),  # 修改此处
             base_url=self.base_url,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout
         )
+
 
     def invoke(self, prompt: str) -> str:
         response = self._client.invoke(prompt)
         if not response:
             logging.warning("No response from OpenAIAdapter.")
             return ""
-        return response.content
+        # 确保 content 是字符串类型
+        content = response.content
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            return str(content)
+        return ""
 
 class GeminiAdapter(BaseLLMAdapter):
     """
@@ -153,18 +166,26 @@ class AzureOpenAIAdapter(BaseLLMAdapter):
             azure_endpoint=self.azure_endpoint,
             azure_deployment=self.azure_deployment,
             api_version=self.api_version,
-            api_key=self.api_key,
+            api_key=SecretStr(self.api_key),
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout
         )
+
 
     def invoke(self, prompt: str) -> str:
         response = self._client.invoke(prompt)
         if not response:
             logging.warning("No response from AzureOpenAIAdapter.")
             return ""
-        return response.content
+        # 确保 content 是字符串类型
+        content = response.content
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            return str(content)
+        return ""
+
 
 class OllamaAdapter(BaseLLMAdapter):
     """
@@ -183,19 +204,27 @@ class OllamaAdapter(BaseLLMAdapter):
 
         self._client = ChatOpenAI(
             model=self.model_name,
-            api_key=self.api_key,
+            api_key=SecretStr(self.api_key),  # 修改此处
             base_url=self.base_url,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout
         )
+
 
     def invoke(self, prompt: str) -> str:
         response = self._client.invoke(prompt)
         if not response:
             logging.warning("No response from OllamaAdapter.")
             return ""
-        return response.content
+        # 确保 content 是字符串类型
+        content = response.content
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            return str(content)
+        return ""
+
 
 class MLStudioAdapter(BaseLLMAdapter):
     def __init__(self, api_key: str, base_url: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
@@ -208,12 +237,13 @@ class MLStudioAdapter(BaseLLMAdapter):
 
         self._client = ChatOpenAI(
             model=self.model_name,
-            api_key=self.api_key,
+            api_key=SecretStr(self.api_key),  # 修改此处
             base_url=self.base_url,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout
         )
+
 
     def invoke(self, prompt: str) -> str:
         try:
@@ -221,10 +251,17 @@ class MLStudioAdapter(BaseLLMAdapter):
             if not response:
                 logging.warning("No response from MLStudioAdapter.")
                 return ""
-            return response.content
+            # 确保 content 是字符串类型
+            content = response.content
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                return str(content)
+            return ""
         except Exception as e:
             logging.error(f"ML Studio API 调用超时或失败: {e}")
             return ""
+
 
 class AzureAIAdapter(BaseLLMAdapter):
     """
@@ -299,15 +336,18 @@ class VolcanoEngineAIAdapter(BaseLLMAdapter):
                     {"role": "system", "content": "你是DeepSeek，是一个 AI 人工智能助手"},
                     {"role": "user", "content": prompt},
                 ],
-                timeout=self.timeout  # 添加超时参数
+                timeout=self.timeout
             )
             if not response:
-                logging.warning("No response from DeepSeekAdapter.")
+                logging.warning("No response from VolcanoEngineAIAdapter.")
                 return ""
-            return response.choices[0].message.content
+            # 确保 content 是字符串类型，处理 None 的情况
+            content = response.choices[0].message.content
+            return content if content is not None else ""
         except Exception as e:
             logging.error(f"火山引擎API调用超时或失败: {e}")
             return ""
+
 
 class SiliconFlowAdapter(BaseLLMAdapter):
     def __init__(self, api_key: str, base_url: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
