@@ -12,6 +12,7 @@ from prompt_definitions import (
     first_chapter_draft_prompt, 
     next_chapter_draft_prompt, 
     summarize_recent_chapters_prompt,
+    CHAPTER_CAST_PROMPT,
     knowledge_filter_prompt,
     knowledge_search_prompt,
     LOGIC_CHECK_PROMPT,
@@ -34,6 +35,54 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+def extract_entity_lock_list(
+    character_state_text: str,
+    characters_involved: str,
+    key_items: str,
+    scene_location: str,
+    previous_excerpt: str,
+    user_guidance: str
+) -> str:
+    """
+    从角色状态、本章要素、前文摘要中提取关键实体列表，供大模型锁定名称使用。
+    防止大模型胡编乱造人物名、地名、技能名等。
+    """
+    entities = []
+    # 从角色状态中解析角色名（格式：角色名：）
+    if character_state_text:
+        for line in character_state_text.split('\n'):
+            line = line.strip()
+            if line.endswith('：') and not line.startswith('├') and not line.startswith('│') and not line.startswith('='):
+                name = line.replace('：', '').strip()
+                if name and name not in ['【核心人设】', '【当前状态】'] and len(name) >= 2:
+                    entities.append(f"人物：{name}")
+    # 从核心人物、道具、场景中补充
+    for part, prefix in [(characters_involved, "人物"), (key_items, "道具"), (scene_location, "场景")]:
+        if part and part.strip():
+            for item in re.split(r'[,，、\s]+', part.strip()):
+                item = item.strip()
+                if item and len(item) >= 2 and item not in ['未指定', '无']:
+                    if prefix == "人物" and not any(f"人物：{item}" in e or e.endswith(item) for e in entities):
+                        entities.append(f"人物：{item}")
+                    elif prefix == "道具":
+                        entities.append(f"道具：{item}")
+                    elif prefix == "场景":
+                        entities.append(f"场景：{item}")
+    # 去重并格式化
+    seen = set()
+    unique = []
+    for e in entities:
+        key = e.split('：', 1)[-1]
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    if not unique:
+        return "（请从前文、角色状态、知识库中提取已出现的名称，严禁编造新的人名、地名、技能名）"
+    result = "\n".join(unique)
+    result += "\n\n【重要】上述为已确认实体。写作时仅使用上述名称或前文/知识库中明确出现的名称，严禁编造新名字。"
+    return result
+
 
 def extract_character_relationships(character_state_text: str) -> str:
     """
@@ -325,10 +374,10 @@ def get_filtered_knowledge_context(
     base_url: str,
     model_name: str,
     interface_format: str,
-    embedding_adapter,
     filepath: str,
     chapter_info: dict,
     retrieved_texts: list,
+    author_implicit_settings: str = "",
     max_tokens: int = 2048,
     timeout: int = 600
 ) -> str:
@@ -372,6 +421,7 @@ def get_filtered_knowledge_context(
 
         prompt = knowledge_filter_prompt.format(
             chapter_info=formatted_chapter_info,
+            author_implicit_settings=author_implicit_settings or "（无）",
             retrieved_texts=all_retrieved_text
         )
         
@@ -404,7 +454,15 @@ def build_chapter_prompt(
     embedding_retrieval_k: int = 2,
     interface_format: str = "openai",
     max_tokens: int = 2048,
-    timeout: int = 600
+    timeout: int = 600,
+    # 选角/逻辑专用模型（可选，不传则复用主模型）
+    cast_api_key: str | None = None,
+    cast_base_url: str | None = None,
+    cast_model_name: str | None = None,
+    cast_interface_format: str | None = None,
+    cast_temperature: float | None = None,
+    cast_max_tokens: int | None = None,
+    cast_timeout: int | None = None,
 ) -> str:
     """
     构造当前章节的请求提示词（完整实现版）
@@ -471,11 +529,11 @@ def build_chapter_prompt(
     # 获取前文内容和摘要
     recent_texts = get_last_n_chapters_text(chapters_dir, novel_number, n=3)
     
-    # 获取前一章结尾
+    # 获取前一章结尾（增加长度以更好衔接上下文）
     previous_excerpt = ""
     for text in reversed(recent_texts):
         if text.strip():
-            previous_excerpt = text[-800:] if len(text) > 800 else text
+            previous_excerpt = text[-1200:] if len(text) > 1200 else text
             break
     
     # 提取角色关系网
@@ -505,11 +563,79 @@ def build_chapter_prompt(
         logging.error(f"Error in summarize_recent_chapters: {str(e)}")
         short_summary = "（摘要生成失败）"
 
-    # ================= 4. [修改] 主动验证逻辑 (Active Verification) =================
-    verification_constraints = "（未启用验证）"
-    
+    # ================= 4. 知识库检索与过滤 =================
+    filtered_context = "（无相关知识库内容，请基于前文设定创作）"
     try:
-        # 准备验证所需的元数据
+        from embedding_adapters import create_embedding_adapter
+        embedding_adapter = create_embedding_adapter(
+            embedding_interface_format,
+            embedding_api_key,
+            embedding_url,
+            embedding_model_name
+        )
+        store = load_vector_store(embedding_adapter, filepath)
+        if store and store._collection.count() > 0:
+            llm_adapter = create_llm_adapter(
+                interface_format=interface_format,
+                base_url=base_url,
+                model_name=model_name,
+                api_key=api_key,
+                temperature=0.2,
+                max_tokens=max_tokens,
+                timeout=timeout
+            )
+            search_prompt = knowledge_search_prompt.format(
+                chapter_number=novel_number,
+                chapter_title=chapter_title,
+                characters_involved=characters_involved,
+                key_items=key_items,
+                scene_location=scene_location,
+                chapter_role=chapter_role,
+                chapter_purpose=chapter_purpose,
+                foreshadowing=foreshadowing,
+                short_summary=short_summary,
+                user_guidance=user_guidance or "（无）",
+                time_constraint=time_constraint or "（无）"
+            )
+            search_response = invoke_with_cleaning(llm_adapter, search_prompt)
+            keyword_groups = parse_search_keywords(search_response)
+            all_contexts = []
+            actual_k = min(embedding_retrieval_k, max(1, store._collection.count()))
+            for group in keyword_groups[:6]:
+                raw = get_relevant_context_from_vector_store(
+                    embedding_adapter, group, filepath, k=max(2, actual_k)
+                )
+                if raw:
+                    all_contexts.append(raw)
+            if all_contexts:
+                processed = apply_content_rules(all_contexts, novel_number)
+                chapter_info_for_filter = {
+                    "chapter_number": novel_number,
+                    "chapter_title": chapter_title,
+                    "chapter_role": chapter_role,
+                    "chapter_purpose": chapter_purpose,
+                    "characters_involved": characters_involved,
+                    "key_items": key_items,
+                    "scene_location": scene_location,
+                }
+                filtered_context = get_filtered_knowledge_context(
+                    api_key=api_key,
+                    base_url=base_url,
+                    model_name=model_name,
+                    interface_format=interface_format,
+                    filepath=filepath,
+                    chapter_info=chapter_info_for_filter,
+                    retrieved_texts=processed,
+                    author_implicit_settings=user_guidance or "",
+                    max_tokens=max_tokens,
+                    timeout=timeout
+                )
+    except Exception as e:
+        logging.warning(f"Knowledge retrieval/filter failed: {e}")
+
+    # ================= 5. 主动验证逻辑 (Active Verification) =================
+    verification_constraints = "（未启用验证）"
+    try:
         verif_info = {
             "chapter_title": chapter_title,
             "chapter_role": chapter_role,
@@ -518,8 +644,6 @@ def build_chapter_prompt(
             "key_items": key_items,
             "scene_location": scene_location
         }
-        
-        # 创建 Embedding Adapter
         from embedding_adapters import create_embedding_adapter
         embedding_adapter = create_embedding_adapter(
             embedding_interface_format,
@@ -527,8 +651,6 @@ def build_chapter_prompt(
             embedding_url,
             embedding_model_name
         )
-        
-        # 执行主动验证
         verification_constraints = perform_active_verification(
             api_key=api_key,
             base_url=base_url,
@@ -537,12 +659,65 @@ def build_chapter_prompt(
             embedding_adapter=embedding_adapter,
             filepath=filepath,
             chapter_info=verif_info,
+            # 传入逻辑/选角模型参数
+            cast_api_key=cast_api_key,
+            cast_base_url=cast_base_url,
+            cast_model_name=cast_model_name,
+            cast_interface_format=cast_interface_format,
+            cast_temperature=cast_temperature,
+            cast_max_tokens=cast_max_tokens,
+            cast_timeout=cast_timeout,
             timeout=timeout
         )
-        
     except Exception as e:
         logging.error(f"Active Verification failed: {e}")
         verification_constraints = "（验证过程异常，请忽略）"
+
+    # ================= 6. 实体锁定列表 =================
+    entity_lock_list = extract_entity_lock_list(
+        character_state_text,
+        characters_involved,
+        key_items,
+        scene_location,
+        previous_excerpt,
+        user_guidance
+    )
+
+    # ================= 7. 本章人物卡（出场角色/关系网/特点动机）=================
+    chapter_cast = "（人物卡生成失败）"
+    try:
+        # 优先使用专门的“逻辑/选角模型”配置
+        cast_if = (cast_interface_format or interface_format)
+        cast_key = (cast_api_key or api_key)
+        cast_url = (cast_base_url or base_url)
+        cast_model = (cast_model_name or model_name)
+        cast_temp = cast_temperature if cast_temperature is not None else 0.2
+        cast_tokens = cast_max_tokens if cast_max_tokens is not None else max_tokens
+        cast_to = cast_timeout if cast_timeout is not None else timeout
+
+        llm_adapter_cast = create_llm_adapter(
+            interface_format=cast_if,
+            base_url=cast_url,
+            model_name=cast_model,
+            api_key=cast_key,
+            temperature=cast_temp,
+            max_tokens=cast_tokens,
+            timeout=cast_to,
+        )
+        chapter_cast_prompt = CHAPTER_CAST_PROMPT.format(
+            global_summary=global_summary_text,
+            previous_chapter_excerpt=previous_excerpt,
+            character_state=character_state_text,
+            short_summary=short_summary,
+            user_guidance=user_guidance or "（无）",
+            characters_involved=characters_involved or "（未指定）",
+            key_items=key_items or "（无）",
+            scene_location=scene_location or "（未知）",
+        )
+        chapter_cast = invoke_with_cleaning(llm_adapter_cast, chapter_cast_prompt, max_retries=3)
+    except Exception as e:
+        logging.warning(f"Chapter cast generation failed: {e}")
+        chapter_cast = "（人物卡生成失败，请以角色状态为准）"
 
     # 返回最终提示词
     return next_chapter_draft_prompt.format(
@@ -550,6 +725,7 @@ def build_chapter_prompt(
         global_summary=global_summary_text,
         previous_chapter_excerpt=previous_excerpt,
         character_state=character_state_text,
+        chapter_cast=chapter_cast,
         short_summary=short_summary,
         novel_number=novel_number,
         chapter_title=chapter_title,
@@ -572,10 +748,9 @@ def build_chapter_prompt(
         next_chapter_foreshadowing=next_chapter_foreshadow,
         next_chapter_plot_twist_level=next_chapter_twist,
         next_chapter_summary=next_chapter_summary,
-        # 新增字段：注入检索到的强制约束
         verification_constraints=verification_constraints,
-        # 旧字段：保留为空，防止 Prompt 报错
-        filtered_context="",
+        entity_lock_list=entity_lock_list,
+        filtered_context=filtered_context,
     )
 
 def generate_chapter_draft(
@@ -806,6 +981,14 @@ def perform_active_verification(
     embedding_adapter,
     filepath: str,
     chapter_info: dict,
+    # 新增：逻辑/选角模型专用参数
+    cast_api_key: str | None = None,
+    cast_base_url: str | None = None,
+    cast_model_name: str | None = None,
+    cast_interface_format: str | None = None,
+    cast_temperature: float | None = None,
+    cast_max_tokens: int | None = None,
+    cast_timeout: int | None = None,
     max_tokens: int = 2048,
     timeout: int = 600
 ) -> str:
@@ -816,14 +999,22 @@ def perform_active_verification(
     3. 制定规则 (Generate Constraints)
     """
     logging.info("Starting Active Verification RAG process...")
+    verif_if = (cast_interface_format or interface_format)
+    verif_key = (cast_api_key or api_key)
+    verif_url = (cast_base_url or base_url)
+    verif_model = (cast_model_name or model_name)
+    verif_temp = cast_temperature if cast_temperature is not None else 0.3
+    verif_tokens = cast_max_tokens if cast_max_tokens is not None else max_tokens
+    verif_to = cast_timeout if cast_timeout is not None else timeout
+
     llm_adapter = create_llm_adapter(
-        interface_format=interface_format,
-        base_url=base_url,
-        model_name=model_name,
-        api_key=api_key,
-        temperature=0.3, # 这里的温度要低，保持理性分析
-        max_tokens=max_tokens,
-        timeout=timeout
+        interface_format=verif_if,
+        base_url=verif_url,
+        model_name=verif_model,
+        api_key=verif_key,
+        temperature=verif_temp,
+        max_tokens=verif_tokens,
+        timeout=verif_to,
     )
 
     # Step 1: 生成验证问题

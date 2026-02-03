@@ -48,18 +48,37 @@ def debug_log(prompt: str, response_content: str):
         f"\n[######################################### Response #########################################]\n{response_content}\n"
     )
 
+def _is_connection_error(exc: Exception) -> bool:
+    """判断是否为网络/SSL 连接类错误，这类错误适合重试"""
+    err_str = str(exc).lower()
+    err_type = type(exc).__name__
+    connection_indicators = [
+        "ssl", "connection", "connect", "eof", "protocol",
+        "timeout", "unreachable", "refused", "proxy"
+    ]
+    return (
+        "connection" in err_type.lower()
+        or "ssl" in err_str
+        or "connect" in err_str
+        or "eof" in err_str
+        or any(ind in err_str for ind in connection_indicators)
+    )
+
+
 def invoke_with_cleaning(llm_adapter, prompt: str, max_retries: int = 3) -> str:
-    """调用 LLM 并清理返回结果"""
+    """调用 LLM 并清理返回结果，对网络/SSL 错误进行指数退避重试"""
     print("\n" + "="*50)
     print("发送到 LLM 的提示词:")
     print("-"*50)
     print(prompt)
     print("="*50 + "\n")
-    
+
     result = ""
     retry_count = 0
-    
-    while retry_count < max_retries:
+    # 网络/SSL 错误时增加重试次数和等待
+    effective_retries = max_retries
+
+    while retry_count < effective_retries:
         try:
             result = llm_adapter.invoke(prompt)
             print("\n" + "="*50)
@@ -67,17 +86,31 @@ def invoke_with_cleaning(llm_adapter, prompt: str, max_retries: int = 3) -> str:
             print("-"*50)
             print(result)
             print("="*50 + "\n")
-            
-            # 清理结果中的特殊格式标记
+
             result = result.replace("```", "").strip()
             if result:
                 return result
             retry_count += 1
         except Exception as e:
-            print(f"调用失败 ({retry_count + 1}/{max_retries}): {str(e)}")
+            is_conn = _is_connection_error(e)
+            if is_conn:
+                effective_retries = max(5, max_retries + 2)  # 连接错误多试几次
+                wait = min(60, 3 * (2 ** retry_count))  # 指数退避：3, 6, 12, 24, 48 秒
+                print(f"网络/SSL 连接失败 ({retry_count + 1}/{effective_retries})，{wait} 秒后重试...")
+                if retry_count + 1 < effective_retries:
+                    time.sleep(wait)
+            else:
+                print(f"调用失败 ({retry_count + 1}/{effective_retries}): {str(e)}")
+
             retry_count += 1
-            if retry_count >= max_retries:
+            if retry_count >= effective_retries:
+                if is_conn:
+                    raise ConnectionError(
+                        f"多次连接失败: {e}\n\n"
+                        "可能原因：代理/防火墙、SSL 证书、网络不稳定。\n"
+                        "建议：检查代理设置、关闭 VPN 后重试，或稍后再试。"
+                    ) from e
                 raise e
-    
+
     return result
 

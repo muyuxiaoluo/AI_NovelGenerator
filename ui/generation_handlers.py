@@ -181,15 +181,34 @@ def generate_chapter_draft_ui(self):
 
             # === 2. 构造提示词并让用户确认 ===
             prompt_text = build_chapter_prompt(
-                api_key=draft_key, base_url=draft_url, model_name=draft_model,
-                filepath=filepath, novel_number=chap_num, word_number=word_num,
-                temperature=draft_temp, user_guidance=user_guide,
-                characters_involved=char_inv, key_items=key_items,
-                scene_location=scene_loc, time_constraint=time_constr,
-                embedding_api_key=emb_key, embedding_url=emb_url,
-                embedding_interface_format=emb_fmt, embedding_model_name=emb_model,
-                embedding_retrieval_k=emb_k, interface_format=draft_interface,
-                max_tokens=draft_tokens, timeout=draft_timeout
+                api_key=draft_key,
+                base_url=draft_url,
+                model_name=draft_model,
+                filepath=filepath,
+                novel_number=chap_num,
+                word_number=word_num,
+                temperature=draft_temp,
+                user_guidance=user_guide,
+                characters_involved=char_inv,
+                key_items=key_items,
+                scene_location=scene_loc,
+                time_constraint=time_constr,
+                embedding_api_key=emb_key,
+                embedding_url=emb_url,
+                embedding_interface_format=emb_fmt,
+                embedding_model_name=emb_model,
+                embedding_retrieval_k=emb_k,
+                interface_format=draft_interface,
+                max_tokens=draft_tokens,
+                timeout=draft_timeout,
+                # 选角/逻辑模型用于人物卡和主动验证
+                cast_api_key=review_key,
+                cast_base_url=review_url,
+                cast_model_name=review_model,
+                cast_interface_format=review_interface,
+                cast_temperature=review_temp,
+                cast_max_tokens=review_tokens,
+                cast_timeout=draft_timeout,
             )
 
             # 弹出确认框逻辑 (含字数统计)
@@ -761,6 +780,9 @@ def generate_batch_ui(self):
         embedding_model_name = self.embedding_model_name_var.get().strip()
         embedding_k = self.safe_get_int(self.embedding_retrieval_k_var, 4)
 
+        # 逻辑/选角模型配置（用于人物卡/主动验证）
+        logic_cfg = self.loaded_config["llm_configs"][self.refine_logic_llm_var.get()]
+
         prompt_text = build_chapter_prompt(
             api_key=draft_api_key,
             base_url=draft_base_url,
@@ -782,6 +804,13 @@ def generate_batch_ui(self):
             interface_format=draft_interface_format,
             max_tokens=draft_max_tokens,
             timeout=draft_timeout,
+            cast_api_key=logic_cfg.get("api_key", ""),
+            cast_base_url=logic_cfg.get("base_url", ""),
+            cast_model_name=logic_cfg.get("model_name", ""),
+            cast_interface_format=logic_cfg.get("interface_format", draft_interface_format),
+            cast_temperature=logic_cfg.get("temperature", draft_temperature),
+            cast_max_tokens=logic_cfg.get("max_tokens", draft_max_tokens),
+            cast_timeout=logic_cfg.get("timeout", draft_timeout),
         )
         final_prompt = prompt_text
         role_names = [name.strip() for name in self.char_inv_text.get("0.0", "end").split("\n")]

@@ -9,11 +9,110 @@ import logging
 import re
 from llm_adapters import create_llm_adapter
 from embedding_adapters import create_embedding_adapter
-# 确保 prompt_definitions 里包含您最新的 FORESHADOWING_ANALYSIS_PROMPT
-from prompt_definitions import summary_prompt, update_character_state_prompt, FORESHADOWING_ANALYSIS_PROMPT
+from prompt_definitions import (
+    summary_prompt,
+    update_character_state_prompt,
+    FORESHADOWING_ANALYSIS_PROMPT,
+    DETECT_CHANGES_PROMPT,
+    UPDATE_PROFILE_PROMPT,
+)
 from novel_generator.common import invoke_with_cleaning
 from utils import read_file, clear_file_content, save_string_to_txt, append_text_to_file
 from novel_generator.vectorstore_utils import update_vector_store
+
+
+def _ensure_role_library_dirs(filepath: str) -> str:
+    """确保角色库目录存在，返回 '全部' 目录路径。"""
+    role_root = os.path.join(filepath, "角色库")
+    all_dir = os.path.join(role_root, "全部")
+    os.makedirs(all_dir, exist_ok=True)
+    return all_dir
+
+
+def _role_profile_template(char_name: str) -> str:
+    """新角色的档案模板（用于 UPDATE_PROFILE_PROMPT 的 old_profile）。"""
+    return "\n".join(
+        [
+            f"{char_name}：",
+            "├──物品：",
+            "│  └──（待补充）",
+            "├──能力：",
+            "│  └──（待补充）",
+            "├──状态：",
+            "│  └──（待补充）",
+            "├──主要角色间关系网：",
+            "│  └──（待补充）",
+            "├──触发或加深的事件：",
+            "│  └──（待补充）",
+        ]
+    )
+
+
+def sync_role_library_from_chapter(
+    novel_number: int,
+    filepath: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    interface_format: str,
+    temperature: float = 0.2,
+    max_tokens: int = 2048,
+    timeout: int = 600,
+):
+    """
+    定稿时：把本章发生变化/新登场的角色，自动写入角色库（角色库/全部/<角色名>.txt）。
+    目标：不再依赖手动“导入临时角色库”，确保角色档案可持续积累。
+    """
+    chapters_dir = os.path.join(filepath, "chapters")
+    chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
+    if not os.path.exists(chapter_file):
+        return
+
+    chapter_text = read_file(chapter_file).strip()
+    if not chapter_text:
+        return
+
+    all_dir = _ensure_role_library_dirs(filepath)
+    llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
+
+    # 1) 识别发生变化/新登场角色
+    names = []
+    try:
+        raw = invoke_with_cleaning(llm_adapter, DETECT_CHANGES_PROMPT.format(chapter_text=chapter_text))
+        # 提取 JSON 数组
+        import json, re
+        m = re.search(r"\[.*?\]", raw, re.DOTALL)
+        if m:
+            names = json.loads(m.group(0))
+    except Exception as e:
+        logging.error(f"角色变化检测失败: {e}")
+        names = []
+
+    if not names:
+        return
+
+    # 2) 逐个更新角色档案
+    for char_name in names:
+        try:
+            if not isinstance(char_name, str):
+                continue
+            char_name = char_name.strip()
+            if not char_name:
+                continue
+
+            profile_path = os.path.join(all_dir, f"{char_name}.txt")
+            old_profile = read_file(profile_path).strip() if os.path.exists(profile_path) else _role_profile_template(char_name)
+
+            prompt = UPDATE_PROFILE_PROMPT.format(
+                char_name=char_name,
+                chapter_text=chapter_text,
+                old_profile=old_profile,
+            )
+            new_profile = invoke_with_cleaning(llm_adapter, prompt)
+            if new_profile and new_profile.strip():
+                save_string_to_txt(new_profile.strip(), profile_path)
+        except Exception as e:
+            logging.error(f"更新角色档案失败({char_name}): {e}")
 
 # -----------------------------------------------------------------------------
 # 1. 独立功能：更新全局摘要
@@ -278,6 +377,23 @@ def finalize_chapter(
     
     # 2. 更新角色
     update_character_state(novel_number, filepath, api_key, base_url, model_name, interface_format, temperature, max_tokens, timeout)
+
+    # 2.5 定稿后同步角色库（自动写入/更新角色档案）
+    try:
+        sync_role_library_from_chapter(
+            novel_number=novel_number,
+            filepath=filepath,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            interface_format=interface_format,
+            temperature=0.2,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        logging.info("角色库同步完成。")
+    except Exception as e:
+        logging.error(f"角色库同步失败: {e}")
     
     # 3. [修改] 更新伏笔 (支持长短线分类)
     update_foreshadowing_records(novel_number, filepath, api_key, base_url, model_name, interface_format, temperature, max_tokens, timeout)
