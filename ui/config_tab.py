@@ -577,6 +577,8 @@ def build_config_choose_tab(self):
     ensure_var("refine_logic_llm_var")    # 新增
     ensure_var("final_chapter_llm_var")   # 新增
     ensure_var("consistency_review_llm_var")
+    ensure_var("directory_continuation_llm_var")  # 新增：目录续写模型
+    ensure_var("directory_refinement_llm_var")    # 新增：目录微调模型
 
     # 1. 架构模型
     create_label_with_help(self, parent=self.config_choose, label_text="生成架构所用大模型", tooltip_key="architecture_llm_config", row=0, column=0, font=("Microsoft YaHei", 12))
@@ -608,6 +610,16 @@ def build_config_choose_tab(self):
     consistency_review_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.consistency_review_llm_var, font=("Microsoft YaHei", 12))
     consistency_review_dropdown.grid(row=5, column=1, padx=5, pady=5, sticky="nsew")
 
+    # 7. 【新增】目录续写模型
+    create_label_with_help(self, parent=self.config_choose, label_text="目录续写所用大模型", tooltip_key="directory_continuation_llm_config", row=6, column=0, font=("Microsoft YaHei", 12))
+    directory_continuation_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.directory_continuation_llm_var, font=("Microsoft YaHei", 12))
+    directory_continuation_dropdown.grid(row=6, column=1, padx=5, pady=5, sticky="nsew")
+
+    # 8. 【新增】目录微调模型
+    create_label_with_help(self, parent=self.config_choose, label_text="目录微调所用大模型", tooltip_key="directory_refinement_llm_config", row=7, column=0, font=("Microsoft YaHei", 12))
+    directory_refinement_dropdown = ctk.CTkOptionMenu(self.config_choose, values=config_choose_options, variable=self.directory_refinement_llm_var, font=("Microsoft YaHei", 12))
+    directory_refinement_dropdown.grid(row=7, column=1, padx=5, pady=5, sticky="nsew")
+
 
     # --- 功能函数 ---
     def save_config_choose():
@@ -623,8 +635,9 @@ def build_config_choose_tab(self):
         # 保存新增项
         config_data["refine_logic_llm"] = self.refine_logic_llm_var.get()
         config_data["final_chapter_llm"] = self.final_chapter_llm_var.get()
-        
         config_data["consistency_review_llm"] = self.consistency_review_llm_var.get()
+        config_data["directory_continuation_llm"] = self.directory_continuation_llm_var.get()  # 新增
+        config_data["directory_refinement_llm"] = self.directory_refinement_llm_var.get()      # 新增
 
         full_config["choose_configs"] = config_data
         save_config(full_config, self.config_file)
@@ -637,7 +650,8 @@ def build_config_choose_tab(self):
         
         dropdowns = [
             architecture_dropdown, chapter_outline_dropdown, prompt_draft_dropdown,
-            refine_logic_dropdown, final_chapter_dropdown, consistency_review_dropdown
+            refine_logic_dropdown, final_chapter_dropdown, consistency_review_dropdown,
+            directory_continuation_dropdown, directory_refinement_dropdown  # 添加新下拉菜单
         ]
         
         for dropdown in dropdowns:

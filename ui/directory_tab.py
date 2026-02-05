@@ -28,6 +28,11 @@ def build_directory_tab(self):
     save_btn = ctk.CTkButton(top_frame, text="保存修改", command=self.save_chapter_blueprint, font=("Microsoft YaHei", 12))
     save_btn.pack(side="right", padx=5)
 
+    # === 新增：生成后续目录按钮 ===
+    continue_btn = ctk.CTkButton(top_frame, text="📚 续写目录 (AI)", command=self.continue_directory_ui, font=("Microsoft YaHei", 12), fg_color="#3498DB")
+    continue_btn.pack(side="right", padx=5)
+    # ========================
+
     # === 新增：微调目录按钮 ===
     refine_btn = ctk.CTkButton(top_frame, text="✨ 微调目录 (AI)", command=self.refine_directory_card_ui, font=("Microsoft YaHei", 12), fg_color="#E67E22")
     refine_btn.pack(side="right", padx=5)

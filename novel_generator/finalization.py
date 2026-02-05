@@ -141,11 +141,14 @@ def update_global_summary(
     global_summary_file = os.path.join(filepath, "global_summary.txt")
     old_summary = read_file(global_summary_file)
 
+    summary_word_count = len(old_summary.strip())
+
     llm_adapter = create_llm_adapter(interface_format, base_url, model_name, api_key, temperature, max_tokens, timeout)
     
     prompt = summary_prompt.format(
         global_summary=old_summary,
-        chapter_text=chapter_text
+        chapter_text=chapter_text,
+        summary_word_count=summary_word_count  # 添加字数参数
     )
 
     try:
@@ -204,7 +207,9 @@ def update_character_state(
 
 def save_structured_foreshadowing(filepath, novel_number, short_text, long_text):
     """
-    辅助函数：将解析出的长短线伏笔整合到文件中，避免重复并持续发展
+    辅助函数：将解析出的长短线伏笔整合到文件中，实现动态管理
+    - 短线伏笔在解决后会被删除
+    - 长线伏笔会按剧情发展更新
     """
     record_file = os.path.join(filepath, "foreshadowing_records.txt")
     
@@ -242,10 +247,10 @@ def save_structured_foreshadowing(filepath, novel_number, short_text, long_text)
         long_section_raw = content[:split_index].rstrip()
         short_section_raw = content[split_index:].rstrip()
 
-        # 在现有部分中查找是否已有当前章节，如果有则替换
+        # 导入正则表达式模块
         import re
         
-        # 替换或添加短线伏笔
+        # 智能处理短线伏笔：检查是否解决了之前的伏笔并删除它们
         if new_short_block:
             # 查找当前章节是否存在
             chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
@@ -258,8 +263,45 @@ def save_structured_foreshadowing(filepath, novel_number, short_text, long_text)
             else:
                 # 如果不存在，添加到短线部分
                 short_section_raw += f"\n\n{new_short_block}"
+                
+            # 检查当前章节的短线伏笔内容是否提到了"已解决"、"已结束"等关键词
+            # 并相应地从短线伏笔中删除已解决的伏笔
+            resolved_patterns = [
+                r"已解决[:：]?\s*(.+?)(?:\n|$)",
+                r"已结束[:：]?\s*(.+?)(?:\n|$)",
+                r"已处理[:：]?\s*(.+?)(?:\n|$)",
+                r"已回应[:：]?\s*(.+?)(?:\n|$)",
+                r"已解决的伏笔[:：]?\s*(.+?)(?:\n|$)",
+                r"解决了[:：]?\s*(.+?)(?:\n|$)",
+                r"完成了[:：]?\s*(.+?)(?:\n|$)"
+            ]
+            
+            # 查找已解决的伏笔内容
+            resolved_items = []
+            for pattern in resolved_patterns:
+                matches = re.findall(pattern, new_short_block, re.IGNORECASE | re.MULTILINE)
+                resolved_items.extend(matches)
+            
+            # 从短线伏笔中移除已解决的伏笔
+            for item in resolved_items:
+                # 清理项目名称，去除多余空白
+                clean_item = item.strip()
+                # 在短线伏笔中查找并移除对应的条目
+                short_section_raw = re.sub(r'.*' + re.escape(clean_item) + r'.*?\n?', '', short_section_raw)
+                
+        else:
+            # 如果新的短线伏笔为空，查找当前章节记录并移除
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, short_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                old_chapter_block = existing_chapter_match.group(0)
+                short_section_raw = short_section_raw.replace(old_chapter_block, "").strip()
+                
+                # 清理多余的空白行
+                short_section_raw = re.sub(r'\n\s*\n\s*\n', '\n\n', short_section_raw)
 
-        # 替换或添加长线伏笔
+        # 处理长线伏笔
         if new_long_block:
             # 查找当前章节是否存在
             chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
@@ -272,17 +314,87 @@ def save_structured_foreshadowing(filepath, novel_number, short_text, long_text)
             else:
                 # 如果不存在，添加到长线部分
                 long_section_raw += f"\n\n{new_long_block}"
+                
+            # 对于长线伏笔，我们不删除它们，而是更新它们的状态
+            # 检查新长线伏笔是否提到了之前的伏笔内容并更新其状态
+            update_patterns = [
+                r"更新状态[:：]?\s*(.+?)(?:\n|$)",
+                r"进展[:：]?\s*(.+?)(?:\n|$)",
+                r"发展[:：]?\s*(.+?)(?:\n|$)",
+                r"推进[:：]?\s*(.+?)(?:\n|$)"
+            ]
+            
+            for pattern in update_patterns:
+                matches = re.findall(pattern, new_long_block, re.IGNORECASE | re.MULTILINE)
+                for match in matches:
+                    # 这里我们可以进一步处理长线伏笔的更新逻辑
+                    # 暂时保留这个扩展点
+                    pass
+        else:
+            # 如果新长线伏笔为空，但当前章节有记录，移除它
+            chapter_pattern = rf"第{novel_number}章：.*?(?=\n第\d+章|$)"
+            existing_chapter_match = re.search(chapter_pattern, long_section_raw, re.DOTALL)
+            
+            if existing_chapter_match:
+                old_chapter_block = existing_chapter_match.group(0)
+                long_section_raw = long_section_raw.replace(old_chapter_block, "").strip()
+                
+                # 清理多余的空白行
+                long_section_raw = re.sub(r'\n\s*\n\s*\n', '\n\n', long_section_raw)
 
         # 重新组合内容
         final_content = f"{long_section_raw}\n\n\n{short_section_raw}\n"
         
         save_string_to_txt(final_content, record_file)
-        logging.info(f"伏笔库已更新 (结构化存储) - 第{novel_number}章")
+        logging.info(f"伏笔库已更新 (动态管理) - 第{novel_number}章")
 
     except Exception as e:
         logging.error(f"伏笔文件解析写入错误: {e}")
         # 降级：如果解析坏了，直接追加到末尾防止丢数据
         append_text_to_file(f"\n\n【第{novel_number}章补录】\n{long_text}\n{short_text}", record_file)
+
+
+def cleanup_foreshadowing_records(filepath):
+    """
+    清理伏笔记录文件，删除已解决的短线伏笔和不必要的标记
+    """
+    record_file = os.path.join(filepath, "foreshadowing_records.txt")
+    if not os.path.exists(record_file):
+        return
+
+    content = read_file(record_file)
+    
+    header_long = "=== 【长线伏笔】 ==="
+    header_short = "=== 【短线伏笔】 ==="
+
+    # 分离长线和短线部分
+    try:
+        split_index = content.find(header_short)
+        
+        # 分离长线和短线部分
+        long_section = content[:split_index].rstrip()
+        short_section = content[split_index:].rstrip()
+
+        # 移除短线伏笔中标记为"已解决"或"已结束"的条目
+        import re
+        # 查找所有"已解决:"或"已结束:"的条目
+        solved_pattern = r'[•\-\d\.]*\s*已解决[:：]\s*[^\n]*\n?|[•\-\d\.]*\s*已结束[:：]\s*[^\n]*\n?'
+        cleaned_short = re.sub(solved_pattern, '', short_section)
+        
+        # 移除多余的空行
+        cleaned_short = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_short).strip()
+        
+        # 长线部分保持不变，只清理空行
+        cleaned_long = re.sub(r'\n\s*\n\s*\n+', '\n\n', long_section).strip()
+
+        # 重新组合内容
+        final_content = f"{cleaned_long}\n\n\n{cleaned_short}\n"
+        
+        save_string_to_txt(final_content, record_file)
+        logging.info("伏笔库已清理完成。")
+        
+    except Exception as e:
+        logging.error(f"伏笔库清理失败: {e}")
 
 
 def update_foreshadowing_records(
@@ -345,6 +457,9 @@ def update_foreshadowing_records(
 
         # 3. 结构化保存
         save_structured_foreshadowing(filepath, novel_number, short_content, long_content)
+        
+        # 4. 清理伏笔库
+        cleanup_foreshadowing_records(filepath)
 
     except Exception as e:
         logging.error(f"伏笔分析失败: {e}")

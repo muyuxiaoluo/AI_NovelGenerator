@@ -164,6 +164,7 @@ def summarize_recent_chapters(
     global_summary: str = "",    # 新增：传入全局摘要以匹配 prompt 占位符
     character_relationships: str = "",  # 新增：角色关系网
     previous_chapter_excerpt: str = "", # 新增：上一章结尾内容
+    user_guidance: str = "",     # 新增：用户指导
     timeout: int = 600
 ) -> str:  # 修改返回值类型为 str，不再是 tuple
     """
@@ -217,6 +218,7 @@ def summarize_recent_chapters(
         summarize_prompt_values = {
             "global_summary": global_summary,
             "previous_chapter_excerpt": previous_chapter_excerpt,
+            "user_guidance": user_guidance,  # 新增用户指导参数
             "novel_number": novel_number,
             "chapter_title": chapter_info.get("chapter_title", "未命名"),
             "chapter_role": chapter_info.get("chapter_role", "常规章节"),
@@ -237,6 +239,7 @@ def summarize_recent_chapters(
         prompt_values = {
             "global_summary": global_summary,
             "previous_chapter_excerpt": previous_chapter_excerpt,
+            "user_guidance": user_guidance,  # 传递用户指导
             "novel_number": novel_number,
             "chapter_title": chapter_info.get("chapter_title", "未命名"),
             "chapter_role": chapter_info.get("chapter_role", "常规章节"),
@@ -533,7 +536,7 @@ def build_chapter_prompt(
     previous_excerpt = ""
     for text in reversed(recent_texts):
         if text.strip():
-            previous_excerpt = text[-1200:] if len(text) > 1200 else text
+            previous_excerpt = text[-800:] if len(text) > 800 else text
             break
     
     # 提取角色关系网
@@ -556,6 +559,7 @@ def build_chapter_prompt(
             global_summary=global_summary_text,
             character_relationships=character_relationships_summary,  # 新增关系网参数
             previous_chapter_excerpt=previous_excerpt,  # 新增参数：上一章结尾内容
+            user_guidance=user_guidance,  # 新增参数：用户指导
             timeout=timeout
         )
         logging.info("Summary generated successfully")

@@ -29,6 +29,7 @@ from ui.generation_handlers import (
     show_plot_arcs_ui,
     generate_batch_ui,
     refine_directory_card_ui,
+    continue_directory_ui,  # 新增续写目录函数
     show_foreshadowing_records_ui,
     show_novel_qa_ui as _show_novel_qa_ui
 )
@@ -409,6 +410,7 @@ class NovelGeneratorGUI:
     do_consistency_check = do_consistency_check
     generate_batch_ui = generate_batch_ui
     refine_directory_card_ui = refine_directory_card_ui
+    continue_directory_ui = continue_directory_ui
     import_knowledge_handler = import_knowledge_handler
     clear_vectorstore_handler = clear_vectorstore_handler
     show_plot_arcs_ui = show_plot_arcs_ui

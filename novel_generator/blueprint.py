@@ -8,7 +8,7 @@ import re
 import logging
 from novel_generator.common import invoke_with_cleaning
 from llm_adapters import create_llm_adapter
-from prompt_definitions import chapter_blueprint_prompt, chunked_chapter_blueprint_prompt
+from prompt_definitions import chapter_blueprint_prompt, chunked_chapter_blueprint_prompt, continue_chapter_blueprint_prompt
 from utils import read_file, clear_file_content, save_string_to_txt
 logging.basicConfig(
     filename='app.log',      # 日志文件名
@@ -177,3 +177,84 @@ def Chapter_blueprint_generate(
         current_start = current_end + 1
 
     logging.info("Novel_directory.txt (chapter blueprint) has been generated successfully (chunked).")
+
+
+# 新增函数：根据现有目录信息生成后续章节目录
+def continue_chapter_blueprint(
+    interface_format: str,
+    api_key: str,
+    base_url: str,
+    llm_model: str,
+    filepath: str,
+    start_chapter: int,
+    end_chapter: int,
+    user_guidance: str = "",
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    timeout: int = 600
+) -> str:
+    """
+    根据现有架构和目录信息生成后续章节的目录
+    """
+    arch_file = os.path.join(filepath, "Novel_architecture.txt")
+    if not os.path.exists(arch_file):
+        logging.warning("Novel_architecture.txt not found. Please generate architecture first.")
+        return ""
+
+    architecture_text = read_file(arch_file).strip()
+    if not architecture_text:
+        logging.warning("Novel_architecture.txt is empty.")
+        return ""
+
+    llm_adapter = create_llm_adapter(
+        interface_format=interface_format,
+        base_url=base_url,
+        model_name=llm_model,
+        api_key=api_key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout
+    )
+
+    # 读取现有目录
+    filename_dir = os.path.join(filepath, "Novel_directory.txt")
+    existing_blueprint = ""
+    if os.path.exists(filename_dir):
+        existing_blueprint = read_file(filename_dir).strip()
+
+    # 限制现有目录长度，避免prompt过长
+    limited_blueprint = limit_chapter_blueprint(existing_blueprint, 100)
+
+    # 计算需要生成的章节数
+    number_of_chapters = end_chapter - start_chapter + 1
+
+    # 构建提示词
+    prompt = continue_chapter_blueprint_prompt.format(
+        novel_architecture=architecture_text,
+        existing_chapters=limited_blueprint,
+        start_chapter=start_chapter,
+        end_chapter=end_chapter,
+        number_of_chapters=number_of_chapters,
+        user_guidance=user_guidance
+    )
+
+    logging.info(f"Generating chapters {start_chapter} to {end_chapter} based on existing blueprint...")
+    result = invoke_with_cleaning(llm_adapter, prompt)
+    
+    if not result.strip():
+        logging.warning(f"Generation for chapters {start_chapter} to {end_chapter} returned empty.")
+        return ""
+
+    # 如果已有目录，将新生成的内容附加到现有目录之后
+    if existing_blueprint:
+        final_blueprint = existing_blueprint + "\n\n" + result.strip()
+    else:
+        final_blueprint = result.strip()
+
+    # 保存到文件
+    clear_file_content(filename_dir)
+    save_string_to_txt(final_blueprint.strip(), filename_dir)
+
+    return result.strip()
+
+

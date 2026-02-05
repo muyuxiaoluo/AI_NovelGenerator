@@ -1166,12 +1166,12 @@ def refine_directory_card_ui(self):
         novel_arch_content = read_file(arch_file) if os.path.exists(arch_file) else ""
         global_sum_content = read_file(summary_file) if os.path.exists(summary_file) else ""
 
-        # 获取配置
+        # 获取配置 - 使用专门的目录微调配置
         try:
-            llm_var = self.refine_logic_llm_var.get()
+            llm_var = self.directory_refinement_llm_var.get()  # 使用新的配置变量
             config = self.loaded_config["llm_configs"][llm_var]
         except:
-            messagebox.showerror("错误", "无法获取配置。")
+            messagebox.showerror("错误", "无法获取目录微调模型配置。")
             return
 
         status_label.configure(text="AI 正在思考并微调剧情...", text_color="blue")
@@ -1204,68 +1204,62 @@ def refine_directory_card_ui(self):
                     self.master.after(0, lambda: status_label.configure(text="❌ 微调失败 (返回空)", text_color="red"))
             except Exception as e:
                 self.master.after(0, lambda: status_label.configure(text=f"❌ 出错: {str(e)}", text_color="red"))
+
             finally:
                 self.master.after(0, lambda: refine_btn.configure(state="normal"))
 
         threading.Thread(target=run_task, daemon=True).start()
 
-    def on_save_confirm():
+    refine_btn = ctk.CTkButton(btn_area, text="AI 微调大纲", command=on_ai_refine, width=120, fg_color="#E67E22")
+    refine_btn.pack(side="left", padx=5)
+
+    def on_save_changes():
+        content = outline_text.get("0.0", "end").strip()
+        if not content:
+            messagebox.showwarning("提示", "大纲内容为空。")
+            return
+            
+        s_val = start_chap_entry.get().strip()
+        e_val = end_chap_entry.get().strip() or s_val
+        
+        if not s_val:
+            messagebox.showwarning("提示", "请输入起始章节号。")
+            return
+
         try:
-            s_val = start_chap_entry.get().strip()
-            e_val = end_chap_entry.get().strip()
-            
-            if not s_val:
-                messagebox.showwarning("提示", "请输入起始章节号以定位替换位置。")
-                return
-                
             start_num = int(s_val)
-            end_num = int(e_val) if e_val else start_num
+            end_num = int(e_val)
             
-            new_block = outline_text.get("0.0", "end").strip()
-            if not new_block:
-                messagebox.showwarning("提示", "内容为空，无法保存。")
+            if end_num < start_num:
+                messagebox.showerror("错误", "结束章节不能小于起始章节")
                 return
 
-            # 读取全文
-            full_content = read_file(directory_file)
+            # 读取现有目录
+            directory_content = read_file(directory_file)
             
-            # 使用相同的正则逻辑定位原文位置
+            # 使用正则表达式替换指定范围内的章节
             pattern = get_range_pattern(start_num, end_num)
-            match = pattern.search(full_content)
+            updated_content = pattern.sub(content, directory_content, count=1)
             
-            if match:
-                # 执行替换
-                # pattern.sub(new, old, count=1) 会替换掉匹配到的那一段
-                updated_full_content = pattern.sub(new_block, full_content, count=1)
-                
-                # 保存
-                save_string_to_txt(updated_full_content, directory_file)
-                
-                # 更新主界面
-                if hasattr(self, 'directory_text'):
-                    self.directory_text.delete("0.0", "end")
-                    self.directory_text.insert("0.0", updated_full_content)
-                
-                messagebox.showinfo("成功", f"第 {start_num}-{end_num} 章大纲已更新并保存。")
-                dialog.destroy()
-            else:
-                messagebox.showerror("定位失败", 
-                    f"在原文件中未找到第 {start_num}-{end_num} 章的连续块。\n"
-                    "可能原因：\n1. 章节号不连续\n2. 格式被破坏\n3. 文件已被外部修改\n"
-                    "建议：手动复制内容到主界面进行粘贴。"
-                )
-                
+            # 保存修改后的目录
+            clear_file_content(directory_file)
+            save_string_to_txt(updated_content.strip(), directory_file)
+            
+            status_label.configure(text="✅ 保存成功", text_color="green")
+            
         except ValueError:
-            messagebox.showerror("错误", "章节号格式错误。")
+            messagebox.showerror("错误", "章节号必须是数字")
         except Exception as e:
-            messagebox.showerror("保存异常", str(e))
+            messagebox.showerror("错误", f"保存失败: {str(e)}")
 
-    refine_btn = ctk.CTkButton(btn_area, text="✨ AI 智能微调", command=on_ai_refine, fg_color="#E67E22", width=150)
-    refine_btn.pack(side="left", padx=20)
-    
-    save_btn = ctk.CTkButton(btn_area, text="💾 确认并保存", command=on_save_confirm, fg_color="#27AE60", width=150)
-    save_btn.pack(side="right", padx=20)
-    
+    save_btn = ctk.CTkButton(btn_area, text="保存修改", command=on_save_changes, width=120)
+    save_btn.pack(side="left", padx=5)
+
+    def on_cancel():
+        dialog.destroy()
+
+    cancel_btn = ctk.CTkButton(btn_area, text="取消", command=on_cancel, width=120)
+    cancel_btn.pack(side="right", padx=5)
 
 def show_foreshadowing_records_ui(self):
     """
@@ -1427,3 +1421,152 @@ def show_novel_qa_ui(self):
     
     # 绑定回车发送
     input_entry.bind("<Return>", send_question)
+
+def continue_directory_ui(self):
+    """
+    续写章节目录的交互界面
+    """
+    filepath = self.filepath_var.get().strip()
+    if not filepath:
+        messagebox.showwarning("警告", "请先配置保存文件路径。")
+        return
+        
+    arch_file = os.path.join(filepath, "Novel_architecture.txt")
+    if not os.path.exists(arch_file):
+        messagebox.showwarning("警告", "尚未生成架构文件 (Novel_architecture.txt)。")
+        return
+
+    directory_file = os.path.join(filepath, "Novel_directory.txt")
+    existing_chapters_count = 0
+    if os.path.exists(directory_file):
+        content = read_file(directory_file)
+        # 使用正则表达式找出所有章节编号
+        pattern = r"第\s*(\d+)\s*章"
+        chapter_numbers = re.findall(pattern, content)
+        if chapter_numbers:
+            chapter_numbers = [int(num) for num in chapter_numbers if num.isdigit()]
+            if chapter_numbers:
+                existing_chapters_count = max(chapter_numbers)
+
+    # 创建弹窗
+    dialog = ctk.CTkToplevel(self.master)
+    dialog.title("续写章节大纲")
+    dialog.geometry("1000x700")
+    
+    # 布局配置
+    dialog.grid_columnconfigure(0, weight=1)
+    dialog.grid_rowconfigure(1, weight=1)
+
+    # --- 顶部控制区 ---
+    top_frame = ctk.CTkFrame(dialog)
+    top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+    
+    ctk.CTkLabel(top_frame, text="起始章节:").pack(side="left", padx=(10, 5))
+    start_chap_entry = ctk.CTkEntry(top_frame, width=60)
+    start_chap_entry.pack(side="left", padx=5)
+    
+    # 设置默认起始章节为现有最大章节+1
+    if existing_chapters_count > 0:
+        start_chap_entry.insert(0, str(existing_chapters_count + 1))
+    
+    ctk.CTkLabel(top_frame, text="结束章节:").pack(side="left", padx=(15, 5))
+    end_chap_entry = ctk.CTkEntry(top_frame, width=60)
+    end_chap_entry.pack(side="left", padx=5)
+
+    # --- 信息提示 ---
+    info_frame = ctk.CTkFrame(dialog)
+    info_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+    info_frame.grid_columnconfigure(0, weight=1)
+    info_frame.grid_rowconfigure(0, weight=1)
+    
+    info_text = ctk.CTkTextbox(info_frame, wrap="word", font=("Microsoft YaHei", 12))
+    info_text.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    
+    # 插入提示信息
+    info_text.insert("0.0", f"当前已有章节: {existing_chapters_count} 章\n\n")
+    info_text.insert("end", "此功能将根据现有架构和目录信息，生成后续章节的目录。\n\n")
+    info_text.insert("end", "提示：\n")
+    info_text.insert("end", "- 起始章节建议设置为当前最大章节号+1\n")
+    info_text.insert("end", "- 结束章节设置为你希望生成到的章节号\n")
+    info_text.insert("end", "- 生成的内容将追加到现有目录文件末尾")
+    info_text.configure(state="disabled")  # 设为只读
+
+    # --- 底部控制区 ---
+    bottom_frame = ctk.CTkFrame(dialog)
+    bottom_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+    
+    status_label = ctk.CTkLabel(bottom_frame, text=f"当前已有 {existing_chapters_count} 章", text_color="green")
+    status_label.pack(side="left", padx=10)
+    
+    continue_btn = ctk.CTkButton(bottom_frame, text="续写目录 (AI)", command=lambda: on_continue_directory(), fg_color="#3498DB")
+    continue_btn.pack(side="right", padx=10)
+
+    def on_continue_directory():
+        s_val = start_chap_entry.get().strip()
+        e_val = end_chap_entry.get().strip()
+        
+        if not s_val or not e_val:
+            messagebox.showwarning("提示", "请填写起始和结束章节号。")
+            return
+            
+        try:
+            start_num = int(s_val)
+            end_num = int(e_val)
+            
+            if end_num < start_num:
+                messagebox.showerror("错误", "结束章节不能小于起始章节")
+                return
+                
+            if start_num <= 0 or end_num <= 0:
+                messagebox.showerror("错误", "章节号必须是正整数")
+                return
+                
+            if existing_chapters_count > 0 and start_num <= existing_chapters_count:
+                messagebox.showwarning("提示", f"起始章节 ({start_num}) 应该大于现有最大章节 ({existing_chapters_count})，否则可能导致章节重复。")
+                
+        except ValueError:
+            messagebox.showerror("错误", "章节号必须是数字")
+            return
+
+        # 获取配置 - 使用专门的目录续写配置
+        try:
+            llm_var = self.directory_continuation_llm_var.get()  # 使用新的配置变量
+            config = self.loaded_config["llm_configs"][llm_var]
+        except:
+            messagebox.showerror("错误", "无法获取目录续写模型配置。")
+            return
+
+        status_label.configure(text="AI 正在分析现有目录并续写...", text_color="blue")
+        continue_btn.configure(state="disabled")
+        
+        def run_task():
+            try:
+                from novel_generator.blueprint import continue_chapter_blueprint
+                
+                result = continue_chapter_blueprint(
+                    interface_format=config["interface_format"],
+                    api_key=config["api_key"],
+                    base_url=config["base_url"],
+                    llm_model=config["model_name"],
+                    filepath=filepath,
+                    start_chapter=start_num,
+                    end_chapter=end_num,
+                    user_guidance="",  # 可以扩展以支持用户指导
+                    temperature=config["temperature"],
+                    max_tokens=config["max_tokens"],
+                    timeout=config["timeout"]
+                )
+                
+                if result:
+                    self.master.after(0, lambda: status_label.configure(text="✅ 续写完成，请检查", text_color="green"))
+                    # 更新主界面的目录显示
+                    self.master.after(0, lambda: self.load_chapter_blueprint())
+                else:
+                    self.master.after(0, lambda: status_label.configure(text="❌ 续写失败 (返回空)", text_color="red"))
+            except Exception as e:
+                self.master.after(0, lambda: status_label.configure(text=f"❌ 出错: {str(e)}", text_color="red"))
+            finally:
+                self.master.after(0, lambda: continue_btn.configure(state="normal"))
+
+        threading.Thread(target=run_task, daemon=True).start()
+
