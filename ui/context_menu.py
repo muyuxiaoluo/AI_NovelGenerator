@@ -2,7 +2,99 @@
 # -*- coding: utf-8 -*-
 import tkinter as tk
 import customtkinter as ctk
-from tkinter import simpledialog
+from tkinter import simpledialog, messagebox
+
+class FindDialog:
+    """
+    自定义查找对话框，提供更大的输入框和更好的用户体验
+    """
+    def __init__(self, parent, search_callback):
+        self.parent = parent
+        self.search_callback = search_callback
+        self.result = None
+        
+        # 创建对话框窗口
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("查找")
+        self.dialog.geometry("500x150")
+        self.dialog.resizable(False, False)
+        
+        # 居中显示
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        # 创建界面
+        self._create_widgets()
+        
+        # 居中窗口
+        self._center_window()
+        
+        # 绑定回车键
+        self.search_entry.bind("<Return>", lambda e: self.on_search())
+        
+        # 等待窗口关闭
+        self.dialog.wait_window()
+    
+    def _create_widgets(self):
+        """创建对话框组件"""
+        # 标签
+        label = tk.Label(
+            self.dialog, 
+            text="请输入要查找的文本：",
+            font=("Microsoft YaHei", 12)
+        )
+        label.pack(pady=(15, 5))
+        
+        # 输入框
+        self.search_entry = tk.Entry(
+            self.dialog, 
+            font=("Microsoft YaHei", 12),
+            width=50
+        )
+        self.search_entry.pack(pady=5, padx=20)
+        self.search_entry.focus_set()
+        
+        # 按钮框架
+        button_frame = tk.Frame(self.dialog)
+        button_frame.pack(pady=10)
+        
+        # 查找按钮
+        search_btn = tk.Button(
+            button_frame,
+            text="查找",
+            command=self.on_search,
+            font=("Microsoft YaHei", 10),
+            width=10
+        )
+        search_btn.pack(side=tk.LEFT, padx=5)
+        
+        # 取消按钮
+        cancel_btn = tk.Button(
+            button_frame,
+            text="取消",
+            command=self.dialog.destroy,
+            font=("Microsoft YaHei", 10),
+            width=10
+        )
+        cancel_btn.pack(side=tk.LEFT, padx=5)
+    
+    def _center_window(self):
+        """将窗口居中显示"""
+        self.dialog.update_idletasks()
+        width = self.dialog.winfo_width()
+        height = self.dialog.winfo_height()
+        x = (self.dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (height // 2)
+        self.dialog.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def on_search(self):
+        """执行查找"""
+        search_text = self.search_entry.get()
+        if search_text:
+            self.result = search_text
+            self.dialog.destroy()
+        else:
+            messagebox.showwarning("提示", "请输入要查找的文本", parent=self.dialog)
 
 class TextWidgetContextMenu:
     """
@@ -147,16 +239,11 @@ class TextWidgetContextMenu:
         Ctrl+F 查找功能
         """
         try:
-            search_text = simpledialog.askstring(
-                "查找",
-                "请输入要查找的文本：",
-                parent=self.widget
-            )
+            dialog = FindDialog(self.widget, None)
+            search_text = dialog.result
             
-            if not search_text:
-                return
-            
-            self._find_next(search_text, start="1.0")
+            if search_text:
+                self._find_next(search_text, start="1.0")
             
         except Exception as e:
             print(f"Find error: {e}")
