@@ -117,7 +117,7 @@ class OllamaEmbeddingAdapter(BaseEmbeddingAdapter):
             return result["embedding"]
         except requests.exceptions.RequestException as e:
             logging.error(f"Ollama embeddings request error: {e}\n{traceback.format_exc()}")
-            return []
+            raise
 
 class MLStudioEmbeddingAdapter(BaseEmbeddingAdapter):
     """
@@ -144,15 +144,17 @@ class MLStudioEmbeddingAdapter(BaseEmbeddingAdapter):
             response.raise_for_status()
             result = response.json()
             if "data" not in result:
-                logging.error(f"Invalid response format from LM Studio API: {result}")
-                return [[]] * len(texts)
-            return [item.get("embedding", []) for item in result["data"]]
+                raise ValueError(f"Invalid response format from LM Studio API: {result}")
+            embeddings = [item.get("embedding", []) for item in result["data"]]
+            if not all(embeddings):
+                raise ValueError("Some embeddings are empty in LM Studio API response")
+            return embeddings
         except requests.exceptions.RequestException as e:
             logging.error(f"LM Studio API request failed: {str(e)}")
-            return [[]] * len(texts)
+            raise
         except (KeyError, IndexError, ValueError, TypeError) as e:
             logging.error(f"Error parsing LM Studio API response: {str(e)}")
-            return [[]] * len(texts)
+            raise
 
     def embed_query(self, query: str) -> List[float]:
         try:
@@ -164,15 +166,17 @@ class MLStudioEmbeddingAdapter(BaseEmbeddingAdapter):
             response.raise_for_status()
             result = response.json()
             if "data" not in result or not result["data"]:
-                logging.error(f"Invalid response format from LM Studio API: {result}")
-                return []
-            return result["data"][0].get("embedding", [])
+                raise ValueError(f"Invalid response format from LM Studio API: {result}")
+            embedding = result["data"][0].get("embedding", [])
+            if not embedding:
+                raise ValueError("Empty embedding in LM Studio API response")
+            return embedding
         except requests.exceptions.RequestException as e:
             logging.error(f"LM Studio API request failed: {str(e)}")
-            return []
+            raise
         except (KeyError, IndexError, ValueError, TypeError) as e:
             logging.error(f"Error parsing LM Studio API response: {str(e)}")
-            return []
+            raise
 
 class GeminiEmbeddingAdapter(BaseEmbeddingAdapter):
     """
@@ -220,13 +224,16 @@ class GeminiEmbeddingAdapter(BaseEmbeddingAdapter):
             response.raise_for_status()
             result = response.json()
             embedding_data = result.get("embedding", {})
-            return embedding_data.get("values", [])
+            embedding = embedding_data.get("values", [])
+            if not embedding:
+                raise ValueError("Empty embedding in Gemini API response")
+            return embedding
         except requests.exceptions.RequestException as e:
             logging.error(f"Gemini embed_content request error: {e}\n{traceback.format_exc()}")
-            return []
+            raise
         except Exception as e:
             logging.error(f"Gemini embed_content parse error: {e}\n{traceback.format_exc()}")
-            return []
+            raise
 
 class SiliconFlowEmbeddingAdapter(BaseEmbeddingAdapter):
     """
@@ -253,39 +260,63 @@ class SiliconFlowEmbeddingAdapter(BaseEmbeddingAdapter):
         for text in texts:
             try:
                 self.payload["input"] = text
-                response = requests.post(self.url, json=self.payload, headers=self.headers)
+                response = requests.post(self.url, json=self.payload, headers=self.headers, timeout=30)
+                
+                if response.status_code >= 500:
+                    error_msg = f"SiliconFlow API server error (HTTP {response.status_code})"
+                    try:
+                        error_detail = response.json()
+                        error_msg += f": {error_detail}"
+                    except:
+                        error_msg += f": {response.text[:200]}"
+                    logging.error(error_msg)
+                    raise requests.exceptions.HTTPError(error_msg)
+                
                 response.raise_for_status()
                 result = response.json()
                 if not result or "data" not in result or not result["data"]:
-                    logging.error(f"Invalid response format from SiliconFlow API: {result}")
-                    embeddings.append([])
-                    continue
+                    raise ValueError(f"Invalid response format from SiliconFlow API: {result}")
                 emb = result["data"][0].get("embedding", [])
+                if not emb:
+                    raise ValueError("Empty embedding in SiliconFlow API response")
                 embeddings.append(emb)
             except requests.exceptions.RequestException as e:
                 logging.error(f"SiliconFlow API request failed: {str(e)}")
-                embeddings.append([])
+                raise
             except (KeyError, IndexError, ValueError, TypeError) as e:
                 logging.error(f"Error parsing SiliconFlow API response: {str(e)}")
-                embeddings.append([])
+                raise
         return embeddings
 
     def embed_query(self, query: str) -> List[float]:
         try:
             self.payload["input"] = query
-            response = requests.post(self.url, json=self.payload, headers=self.headers)
+            response = requests.post(self.url, json=self.payload, headers=self.headers, timeout=30)
+            
+            if response.status_code >= 500:
+                error_msg = f"SiliconFlow API server error (HTTP {response.status_code})"
+                try:
+                    error_detail = response.json()
+                    error_msg += f": {error_detail}"
+                except:
+                    error_msg += f": {response.text[:200]}"
+                logging.error(error_msg)
+                raise requests.exceptions.HTTPError(error_msg)
+            
             response.raise_for_status()
             result = response.json()
             if not result or "data" not in result or not result["data"]:
-                logging.error(f"Invalid response format from SiliconFlow API: {result}")
-                return []
-            return result["data"][0].get("embedding", [])
+                raise ValueError(f"Invalid response format from SiliconFlow API: {result}")
+            embedding = result["data"][0].get("embedding", [])
+            if not embedding:
+                raise ValueError("Empty embedding in SiliconFlow API response")
+            return embedding
         except requests.exceptions.RequestException as e:
             logging.error(f"SiliconFlow API request failed: {str(e)}")
-            return []
+            raise
         except (KeyError, IndexError, ValueError, TypeError) as e:
             logging.error(f"Error parsing SiliconFlow API response: {str(e)}")
-            return []
+            raise
 
 def create_embedding_adapter(
     interface_format: str,

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import logging
 import traceback
+import requests
 from llm_adapters import create_llm_adapter
 from embedding_adapters import create_embedding_adapter
 from novel_generator.common import invoke_with_cleaning
@@ -63,6 +64,14 @@ def answer_novel_question(
         # 拼接上下文
         context_text = "\n\n".join([f"---片段---\n{d.page_content}" for d in docs])
         
+    except requests.exceptions.HTTPError as e:
+        error_msg = str(e)
+        if "500" in error_msg or "Internal Server Error" in error_msg:
+            logging.error(f"SiliconFlow API 服务器错误: {traceback.format_exc()}")
+            return "检索失败：SiliconFlow API 服务器暂时不可用，请稍后重试。"
+        else:
+            logging.error(f"检索失败 (HTTP错误): {traceback.format_exc()}")
+            return f"检索失败: {str(e)}"
     except Exception as e:
         logging.error(f"检索失败: {traceback.format_exc()}")
         return f"检索失败: {str(e)}"

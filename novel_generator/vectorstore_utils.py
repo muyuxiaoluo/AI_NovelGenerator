@@ -66,19 +66,25 @@ def init_vector_store(embedding_adapter, texts, filepath: str):
     try:
         class LCEmbeddingWrapper(LCEmbeddings):
             def embed_documents(self, texts):
-                return call_with_retry(
+                result = call_with_retry(
                     func=embedding_adapter.embed_documents,
                     max_retries=3,
-                    fallback_return=[],
+                    fallback_return=None,
                     texts=texts
                 )
+                if result is None or not result:
+                    raise ValueError(f"Embedding failed for {len(texts)} documents")
+                return result
+            
             def embed_query(self, query: str):
                 res = call_with_retry(
                     func=embedding_adapter.embed_query,
                     max_retries=3,
-                    fallback_return=[],
+                    fallback_return=None,
                     query=query
                 )
+                if res is None or not res:
+                    raise ValueError(f"Embedding failed for query: {query[:50]}...")
                 return res
 
         chroma_embedding = LCEmbeddingWrapper()
@@ -90,6 +96,16 @@ def init_vector_store(embedding_adapter, texts, filepath: str):
             collection_name="novel_collection"
         )
         return vectorstore
+    except ValueError as e:
+        logging.error(f"Embedding error while initializing vector store: {e}")
+        traceback.print_exc()
+        logging.warning("Failed to initialize vector store due to embedding failure.")
+        return None
+    except IndexError as e:
+        logging.error(f"Index error while initializing vector store (likely empty embedding): {e}")
+        traceback.print_exc()
+        logging.warning("Failed to initialize vector store due to empty embedding.")
+        return None
     except Exception as e:
         logging.warning(f"Init vector store failed: {e}")
         traceback.print_exc()
@@ -109,19 +125,25 @@ def load_vector_store(embedding_adapter, filepath: str):
     try:
         class LCEmbeddingWrapper(LCEmbeddings):
             def embed_documents(self, texts):
-                return call_with_retry(
+                result = call_with_retry(
                     func=embedding_adapter.embed_documents,
                     max_retries=3,
-                    fallback_return=[],
+                    fallback_return=None,
                     texts=texts
                 )
+                if result is None or not result:
+                    raise ValueError(f"Embedding failed for {len(texts)} documents")
+                return result
+            
             def embed_query(self, query: str):
                 res = call_with_retry(
                     func=embedding_adapter.embed_query,
                     max_retries=3,
-                    fallback_return=[],
+                    fallback_return=None,
                     query=query
                 )
+                if res is None or not res:
+                    raise ValueError(f"Embedding failed for query: {query[:50]}...")
                 return res
 
         chroma_embedding = LCEmbeddingWrapper()
@@ -131,6 +153,16 @@ def load_vector_store(embedding_adapter, filepath: str):
             client_settings=Settings(anonymized_telemetry=False),
             collection_name="novel_collection"
         )
+    except ValueError as e:
+        logging.error(f"Embedding error while loading vector store: {e}")
+        traceback.print_exc()
+        logging.warning("Failed to load vector store due to embedding failure.")
+        return None
+    except IndexError as e:
+        logging.error(f"Index error while loading vector store (likely empty embedding): {e}")
+        traceback.print_exc()
+        logging.warning("Failed to load vector store due to empty embedding.")
+        return None
     except Exception as e:
         logging.warning(f"Failed to load vector store: {e}")
         traceback.print_exc()
@@ -225,8 +257,18 @@ def update_vector_store(embedding_adapter, new_chapter: str, filepath: str):
         if not docs:
             logging.warning("No valid documents to insert into vector store after filtering empty texts. Skipping.")
             return
+        
+        logging.info(f"Attempting to add {len(docs)} documents to vector store...")
         store.add_documents(docs)
         logging.info("Vector store updated with the new chapter splitted segments.")
+    except ValueError as e:
+        logging.error(f"Embedding error while updating vector store: {e}")
+        traceback.print_exc()
+        logging.warning("Skipping vector store update due to embedding failure.")
+    except IndexError as e:
+        logging.error(f"Index error while updating vector store (likely empty embedding): {e}")
+        traceback.print_exc()
+        logging.warning("Skipping vector store update due to empty embedding.")
     except Exception as e:
         logging.warning(f"Failed to update vector store: {e}")
         traceback.print_exc()

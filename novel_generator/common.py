@@ -28,10 +28,17 @@ def call_with_retry(func, max_retries=3, sleep_time=2, fallback_return=None, **k
         try:
             return func(**kwargs)
         except Exception as e:
+            error_str = str(e)
             logging.warning(f"[call_with_retry] Attempt {attempt} failed with error: {e}")
             traceback.print_exc()
+            
             if attempt < max_retries:
-                time.sleep(sleep_time)
+                if "500" in error_str or "Internal Server Error" in error_str:
+                    wait_time = sleep_time * 2
+                    logging.info(f"Server error detected, waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(sleep_time)
             else:
                 logging.error("Max retries reached, returning fallback_return.")
                 return fallback_return
