@@ -66,8 +66,34 @@ def save_chapter_blueprint(self):
     if not filepath:
         messagebox.showwarning("警告", "请先设置保存文件路径")
         return
-    content = self.directory_text.get("0.0", "end").strip()
-    filename = os.path.join(filepath, "Novel_directory.txt")
-    clear_file_content(filename)
-    save_string_to_txt(content, filename)
-    self.log("已保存对 Novel_directory.txt 的修改。")
+    
+    try:
+        content = self.directory_text.get("0.0", "end").strip()
+        if not content:
+            messagebox.showwarning("警告", "目录内容为空，无法保存")
+            return
+        
+        filename = os.path.join(filepath, "Novel_directory.txt")
+        
+        # 确保目录存在
+        os.makedirs(filepath, exist_ok=True)
+        
+        # 直接保存（不需要先清空）
+        save_string_to_txt(content, filename)
+        
+        # 验证保存是否成功
+        if os.path.exists(filename):
+            saved_content = read_file(filename)
+            if saved_content.strip() == content:
+                self.log("✅ 已成功保存对 Novel_directory.txt 的修改。")
+                messagebox.showinfo("成功", "目录修改已保存！")
+            else:
+                self.log("❌ 保存验证失败：文件内容不匹配")
+                messagebox.showerror("错误", "保存验证失败，请重试")
+        else:
+            self.log(f"❌ 保存失败：文件 {filename} 不存在")
+            messagebox.showerror("错误", f"保存失败：文件 {filename} 未创建")
+            
+    except Exception as e:
+        self.log(f"❌ 保存目录时出错: {str(e)}")
+        messagebox.showerror("错误", f"保存目录时出错：{str(e)}")
