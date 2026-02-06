@@ -42,45 +42,144 @@ def extract_entity_lock_list(
     key_items: str,
     scene_location: str,
     previous_excerpt: str,
-    user_guidance: str
+    user_guidance: str,
+    filepath: str = None,
+    use_entity_tracker: bool = True
 ) -> str:
     """
-    从角色状态、本章要素、前文摘要中提取关键实体列表，供大模型锁定名称使用。
-    防止大模型胡编乱造人物名、地名、技能名等。
+    从角色状态、本章要素、前文摘要中提取关键实体列表及属性，供大模型锁定使用。
+    防止大模型胡编乱造人物名、地名、技能名等，并确保属性一致性。
+    
+    Args:
+        character_state_text: 角色状态文本
+        characters_involved: 涉及的人物
+        key_items: 关键道具
+        scene_location: 场景位置
+        previous_excerpt: 前文摘录
+        user_guidance: 用户指导
+        filepath: 项目路径（用于加载实体追踪器）
+        use_entity_tracker: 是否使用实体追踪器
+    
+    Returns:
+        实体锁定列表文本
     """
     entities = []
-    # 从角色状态中解析角色名（格式：角色名：）
+    
+    # 尝试从实体追踪器加载属性
+    entity_attributes = {}
+    if use_entity_tracker and filepath:
+        try:
+            from entity_tracker import create_tracker
+            tracker = create_tracker(filepath)
+            all_entities = tracker.get_all_entities()
+            
+            # 提取所有实体的属性
+            for category, category_entities in all_entities.items():
+                for name, entity_data in category_entities.items():
+                    attrs = entity_data.get("属性", {})
+                    if attrs:
+                        entity_attributes[(category, name)] = attrs
+        except Exception as e:
+            logging.warning(f"加载实体追踪器失败: {e}")
+    
+    # 从角色状态中解析角色名及属性（格式：角色名：）
     if character_state_text:
         for line in character_state_text.split('\n'):
             line = line.strip()
             if line.endswith('：') and not line.startswith('├') and not line.startswith('│') and not line.startswith('='):
                 name = line.replace('：', '').strip()
                 if name and name not in ['【核心人设】', '【当前状态】'] and len(name) >= 2:
-                    entities.append(f"人物：{name}")
+                    # 检查是否有追踪的属性
+                    attrs = entity_attributes.get(("人物", name), {})
+                    if attrs:
+                        attr_str = ", ".join([f"{k}={v}" for k, v in attrs.items()])
+                        entities.append(f"人物：{name} [{attr_str}]")
+                    else:
+                        entities.append(f"人物：{name}")
+    
     # 从核心人物、道具、场景中补充
     for part, prefix in [(characters_involved, "人物"), (key_items, "道具"), (scene_location, "场景")]:
         if part and part.strip():
             for item in re.split(r'[,，、\s]+', part.strip()):
                 item = item.strip()
                 if item and len(item) >= 2 and item not in ['未指定', '无']:
-                    if prefix == "人物" and not any(f"人物：{item}" in e or e.endswith(item) for e in entities):
-                        entities.append(f"人物：{item}")
+                    if prefix == "人物" and not any(f"人物：{item}" in e or e.startswith(f"人物：{item}") for e in entities):
+                        # 检查是否有追踪的属性
+                        attrs = entity_attributes.get(("人物", item), {})
+                        if attrs:
+                            attr_str = ", ".join([f"{k}={v}" for k, v in attrs.items()])
+                            entities.append(f"人物：{item} [{attr_str}]")
+                        else:
+                            entities.append(f"人物：{item}")
                     elif prefix == "道具":
-                        entities.append(f"道具：{item}")
+                        # 检查是否有追踪的属性
+                        attrs = entity_attributes.get(("道具", item), {})
+                        if attrs:
+                            attr_str = ", ".join([f"{k}={v}" for k, v in attrs.items()])
+                            entities.append(f"道具：{item} [{attr_str}]")
+                        else:
+                            entities.append(f"道具：{item}")
                     elif prefix == "场景":
-                        entities.append(f"场景：{item}")
+                        # 检查是否有追踪的属性
+                        attrs = entity_attributes.get(("场景", item), {})
+                        if attrs:
+                            attr_str = ", ".join([f"{k}={v}" for k, v in attrs.items()])
+                            entities.append(f"场景：{item} [{attr_str}]")
+                        else:
+                            entities.append(f"场景：{item}")
+    
+    # 从用户指导中提取可能的实体属性
+    if user_guidance:
+        # 简单的模式匹配，提取属性信息
+        patterns = [
+            r'(\w+光罩).*?(淡黄|淡蓝|红色|蓝色|绿色|白色|黑色|金色|紫色)',
+            r'(\w+阵法).*?(完好|破损|激活|失效)',
+            r'(\w+).*?(是|为|担任)(术研院主事|城防军队长|掌门|弟子|长老|护法)'
+        ]
+        for pattern in patterns:
+            matches = re.finditer(pattern, user_guidance)
+            for match in matches:
+                name = match.group(1)
+                attr_value = match.group(2)
+                # 确定类别
+                category = "道具" if "光罩" in name or "阵法" in name else "人物"
+                # 检查是否已存在
+                exists = False
+                for i, e in enumerate(entities):
+                    if e.startswith(f"{category}：{name}"):
+                        # 更新属性
+                        entities[i] = f"{category}：{name} [{attr_value}]"
+                        exists = True
+                        break
+                if not exists:
+                    entities.append(f"{category}：{name} [{attr_value}]")
+    
     # 去重并格式化
     seen = set()
     unique = []
     for e in entities:
-        key = e.split('：', 1)[-1]
+        # 提取名称用于去重（去掉属性部分）
+        key = e.split('：', 1)[-1].split(' [')[0].strip()
         if key not in seen:
             seen.add(key)
             unique.append(e)
+    
     if not unique:
         return "（请从前文、角色状态、知识库中提取已出现的名称，严禁编造新的人名、地名、技能名）"
+    
     result = "\n".join(unique)
-    result += "\n\n【重要】上述为已确认实体。写作时仅使用上述名称或前文/知识库中明确出现的名称，严禁编造新名字。"
+    
+    # 添加重要约束说明
+    result += "\n\n" + "=" * 60
+    result += "\n【重要约束】"
+    result += "\n1. 上述为已确认实体及其属性，写作时必须严格遵守"
+    result += "\n2. 实体属性（如颜色、职位、状态等）严禁随意更改"
+    result += "\n3. 如需修改属性，必须在正文中明确说明原因（如：光罩被攻击后颜色发生变化）"
+    result += "\n4. 禁止出现属性前后矛盾的情况（如光罩从淡黄变为淡蓝）"
+    result += "\n5. 人物身份、职位等关键属性必须保持一致"
+    result += "\n6. 仅使用上述名称或前文/知识库中明确出现的名称，严禁编造新名字"
+    result += "\n" + "=" * 60
+    
     return result
 
 
@@ -684,7 +783,9 @@ def build_chapter_prompt(
         key_items,
         scene_location,
         previous_excerpt,
-        user_guidance
+        user_guidance,
+        filepath=filepath,
+        use_entity_tracker=True
     )
 
     # ================= 7. 本章人物卡（出场角色/关系网/特点动机）=================

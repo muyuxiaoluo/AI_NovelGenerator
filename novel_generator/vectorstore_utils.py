@@ -58,7 +58,10 @@ def init_vector_store(embedding_adapter, texts, filepath: str):
 
     store_dir = get_vectorstore_dir(filepath)
     os.makedirs(store_dir, exist_ok=True)
-    documents = [Document(page_content=str(t)) for t in texts]
+    documents = [Document(page_content=str(t)) for t in texts if t and str(t).strip()]
+    if not documents:
+        logging.warning("No valid documents to initialize vector store after filtering empty texts. Returning None.")
+        return None
 
     try:
         class LCEmbeddingWrapper(LCEmbeddings):
@@ -180,7 +183,9 @@ def split_text_for_vectorstore(chapter_text: str, max_length: int = 500, similar
         sentence_length = len(sentence)
         if current_length + sentence_length > max_length:
             if current_segment:
-                final_segments.append(" ".join(current_segment))
+                segment = " ".join(current_segment)
+                if segment.strip():
+                    final_segments.append(segment)
             current_segment = [sentence]
             current_length = sentence_length
         else:
@@ -188,7 +193,9 @@ def split_text_for_vectorstore(chapter_text: str, max_length: int = 500, similar
             current_length += sentence_length
     
     if current_segment:
-        final_segments.append(" ".join(current_segment))
+        segment = " ".join(current_segment)
+        if segment.strip():
+            final_segments.append(segment)
     
     return final_segments
 
@@ -214,7 +221,10 @@ def update_vector_store(embedding_adapter, new_chapter: str, filepath: str):
         return
 
     try:
-        docs = [Document(page_content=str(t)) for t in splitted_texts]
+        docs = [Document(page_content=str(t)) for t in splitted_texts if t and str(t).strip()]
+        if not docs:
+            logging.warning("No valid documents to insert into vector store after filtering empty texts. Skipping.")
+            return
         store.add_documents(docs)
         logging.info("Vector store updated with the new chapter splitted segments.")
     except Exception as e:
