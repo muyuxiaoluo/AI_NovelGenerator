@@ -55,8 +55,48 @@ def build_novel_params_area(self, start_row=1):
     chapter_num_entry = ctk.CTkEntry(self.params_frame, textvariable=self.chapter_num_var, width=80, font=("Microsoft YaHei", 12))
     chapter_num_entry.grid(row=row_chap_num, column=1, padx=5, pady=5, sticky="w")
 
+    # 5.5) 章节开篇模式
+    row_opening_mode = 5
+    create_label_with_help_for_novel_params(self, parent=self.params_frame, label_text="章节开篇模式:", tooltip_key="opening_mode", row=row_opening_mode, column=0, font=("Microsoft YaHei", 12))
+    
+    # 创建开篇模式选择器
+    opening_mode_frame = ctk.CTkFrame(self.params_frame)
+    opening_mode_frame.grid(row=row_opening_mode, column=1, padx=5, pady=5, sticky="w")
+    
+    # 初始化变量
+    if not hasattr(self, 'opening_mode_var'):
+        self.opening_mode_var = ctk.StringVar(value="continuation")
+    
+    # 创建单选按钮
+    continuation_radio = ctk.CTkRadioButton(
+        opening_mode_frame,
+        text="无缝承接",
+        variable=self.opening_mode_var,
+        value="continuation",
+        font=("Microsoft YaHei", 10)
+    )
+    continuation_radio.grid(row=0, column=0, padx=5)
+    
+    cut_radio = ctk.CTkRadioButton(
+        opening_mode_frame,
+        text="断章跳转",
+        variable=self.opening_mode_var,
+        value="cut",
+        font=("Microsoft YaHei", 10)
+    )
+    cut_radio.grid(row=0, column=1, padx=5)
+    
+    flashback_radio = ctk.CTkRadioButton(
+        opening_mode_frame,
+        text="回溯插叙",
+        variable=self.opening_mode_var,
+        value="flashback",
+        font=("Microsoft YaHei", 10)
+    )
+    flashback_radio.grid(row=0, column=2, padx=5)
+
     # 6) 内容指导
-    row_user_guide = 5
+    row_user_guide = 6
     create_label_with_help_for_novel_params(self, parent=self.params_frame, label_text="内容指导:", tooltip_key="user_guidance", row=row_user_guide, column=0, font=("Microsoft YaHei", 12), sticky="ne")
     self.user_guide_text = ctk.CTkTextbox(self.params_frame, height=80, wrap="word", font=("Microsoft YaHei", 12))
     TextWidgetContextMenu(self.user_guide_text)
@@ -65,7 +105,7 @@ def build_novel_params_area(self, start_row=1):
         self.user_guide_text.insert("0.0", self.user_guidance_default)
 
     # 7) 可选元素：核心人物/关键道具/空间坐标/时间压力
-    row_idx = 6
+    row_idx = 7
     create_label_with_help_for_novel_params(self, parent=self.params_frame, label_text="核心人物:", tooltip_key="characters_involved", row=row_idx, column=0, font=("Microsoft YaHei", 12))
     
     # 核心人物输入框+按钮容器

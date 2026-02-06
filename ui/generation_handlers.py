@@ -201,6 +201,7 @@ def generate_chapter_draft_ui(self):
                 interface_format=draft_interface,
                 max_tokens=draft_tokens,
                 timeout=draft_timeout,
+                opening_mode=self.opening_mode_var.get(),  # 新增参数
                 # 选角/逻辑模型用于人物卡和主动验证
                 cast_api_key=review_key,
                 cast_base_url=review_url,
@@ -456,7 +457,9 @@ def generate_chapter_draft_ui(self):
                                 feedback=current_feedback,
                                 temperature=use_temp,
                                 max_tokens=use_tokens,
-                                timeout=use_timeout
+                                timeout=use_timeout,
+                                filepath=filepath,
+                                chapter_num=chap_num
                             )
                             if new_text:
                                 self.master.after(0, lambda: content_box.delete("0.0", "end"))
@@ -804,6 +807,7 @@ def generate_batch_ui(self):
             interface_format=draft_interface_format,
             max_tokens=draft_max_tokens,
             timeout=draft_timeout,
+            opening_mode=self.opening_mode_var.get(),  # 新增参数
             cast_api_key=logic_cfg.get("api_key", ""),
             cast_base_url=logic_cfg.get("base_url", ""),
             cast_model_name=logic_cfg.get("model_name", ""),

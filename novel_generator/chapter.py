@@ -557,6 +557,7 @@ def build_chapter_prompt(
     interface_format: str = "openai",
     max_tokens: int = 2048,
     timeout: int = 600,
+    opening_mode: str = "continuation",  # 新增参数：章节开篇模式
     # 选角/逻辑专用模型（可选，不传则复用主模型）
     cast_api_key: str | None = None,
     cast_base_url: str | None = None,
@@ -824,6 +825,33 @@ def build_chapter_prompt(
         logging.warning(f"Chapter cast generation failed: {e}")
         chapter_cast = "（人物卡生成失败，请以角色状态为准）"
 
+    # 根据开篇模式生成对应的规则
+    opening_mode_rules = ""
+    if opening_mode == "continuation":
+        opening_mode_rules = """【开篇规则】
+开篇必须直接延续上一章的同一场景、同一时间线、同一情绪或动作。"""
+    elif opening_mode == "cut":
+        opening_mode_rules = """【开篇规则】
+允许完全不同的场景、时间或人物。开篇必须具备以下特征：
+1）信息不完整
+2）画面强烈
+3）不解释与主线的关系
+严禁回顾上一章内容或做任何过渡说明。
+
+【断章跳转额外规则】
+开篇 300 字内：
+- 禁止解释人物身份、背景、立场
+- 禁止说明该场景与主线的关系
+- 只允许呈现：环境、行为、异常细节
+- 目标是制造疑问，而不是解答"""
+    elif opening_mode == "flashback":
+        opening_mode_rules = """【开篇规则】
+开篇需明确时间错位（通过环境、细节暗示）。
+禁止使用"回忆""曾经"等直白说明词。"""
+    else:
+        opening_mode_rules = """【开篇规则】
+开篇必须直接延续上一章的同一场景、同一时间线、同一情绪或动作。"""
+
     # 返回最终提示词
     return next_chapter_draft_prompt.format(
         user_guidance=user_guidance if user_guidance else "无特殊指导",
@@ -845,6 +873,7 @@ def build_chapter_prompt(
         key_items=key_items,
         scene_location=scene_location,
         time_constraint=time_constraint,
+        opening_mode_rules=opening_mode_rules,  # 使用生成的规则
         next_chapter_number=next_chapter_number,
         next_chapter_title=next_chapter_title,
         next_chapter_role=next_chapter_role,
@@ -1003,13 +1032,31 @@ def rewrite_chapter_with_feedback(
     feedback: str,
     temperature: float = 0.7,
     max_tokens: int = 4096,
-    timeout: int = 600
+    timeout: int = 600,
+    filepath: str = None,
+    chapter_num: int = None
 ) -> str:
     """
     根据反馈意见重写章节
     """
     try:
+        # 获取前文摘要
+        previous_chapters_summary = ""
+        if filepath and chapter_num:
+            try:
+                chapters_dir = os.path.join(filepath, "chapters")
+                previous_texts = get_last_n_chapters_text(chapters_dir, chapter_num, n=2)
+                if previous_texts:
+                    # 生成前文摘要（限制在500字以内）
+                    combined_previous = "\n".join(previous_texts)
+                    if len(combined_previous) > 2000:
+                        combined_previous = combined_previous[-2000:]
+                    previous_chapters_summary = f"前文核心内容（最近{len(previous_texts)}章）：\n{combined_previous}"
+            except Exception as e:
+                logging.warning(f"获取前文摘要失败: {e}")
+        
         prompt = REWRITE_WITH_FEEDBACK_PROMPT.format(
+            previous_chapters_summary=previous_chapters_summary if previous_chapters_summary else "（暂无前文信息）",
             original_content=original_content,
             feedback=feedback
         )

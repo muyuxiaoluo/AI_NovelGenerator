@@ -191,7 +191,8 @@ def build_ai_config_tab(self):
             "characters_involved": self.characters_involved_var.get(),
             "key_items": self.key_items_var.get(),
             "scene_location": self.scene_location_var.get(),
-            "time_constraint": self.time_constraint_var.get()
+            "time_constraint": self.time_constraint_var.get(),
+            "opening_mode": self.opening_mode_var.get() if hasattr(self, 'opening_mode_var') else "continuation"
         }
         self.loaded_config["embedding_configs"][self.embedding_interface_format_var.get().strip()] = embedding_config
         self.loaded_config["other_params"] = other_params
@@ -798,6 +799,8 @@ def load_config_btn(self):
         self.key_items_var.set(other_params.get("key_items", ""))
         self.scene_location_var.set(other_params.get("scene_location", ""))
         self.time_constraint_var.set(other_params.get("time_constraint", ""))
+        if hasattr(self, 'opening_mode_var'):
+            self.opening_mode_var.set(other_params.get("opening_mode", "continuation"))
         self.log("已加载配置。")
     else:
         messagebox.showwarning("提示", "未找到或无法读取配置文件。")
@@ -833,7 +836,8 @@ def save_config_btn(self):
         "characters_involved": self.characters_involved_var.get(),
         "key_items": self.key_items_var.get(),
         "scene_location": self.scene_location_var.get(),
-        "time_constraint": self.time_constraint_var.get()
+        "time_constraint": self.time_constraint_var.get(),
+        "opening_mode": self.opening_mode_var.get() if hasattr(self, 'opening_mode_var') else "continuation"
     }
     llm_config_name = self.base_url_var.get().split("/")[2] + " " + self.model_name_var.get()
 
