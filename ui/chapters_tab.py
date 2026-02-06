@@ -75,8 +75,10 @@ def refresh_chapters_list(self):
     current_selected = self.chapter_select_var.get()
     if current_selected not in self.chapters_list:
         if self.chapters_list:
-            self.chapter_select_var.set(self.chapters_list[0])
-            load_chapter_content(self, self.chapters_list[0])
+            # 默认选择数字最大的章节
+            max_chapter = max(self.chapters_list, key=lambda x: int(x))
+            self.chapter_select_var.set(max_chapter)
+            load_chapter_content(self, max_chapter)
         else:
             self.chapter_select_var.set("")
             self.chapter_view_text.delete("0.0", "end")
